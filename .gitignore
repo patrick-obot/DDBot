@@ -1,0 +1,38 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/*.log
+
+# Data (keep structure, ignore contents)
+data/alert_history.json
+
+# OS
+Thumbs.db
+.DS_Store
+nul
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
