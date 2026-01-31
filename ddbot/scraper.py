@@ -1,6 +1,7 @@
 """DownDetector scraper using Playwright."""
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -109,11 +110,10 @@ class DownDetectorScraper:
 
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            # Wait for the main content to render
             await page.wait_for_timeout(3000)
 
-            report_count = await self._extract_report_count(page)
-            status = self._classify_status(report_count)
+            report_count, page_status = await self._extract_from_page(page)
+            status = page_status or self._classify_status(report_count)
 
             return ScrapeResult(
                 service=service,
@@ -124,45 +124,92 @@ class DownDetectorScraper:
         finally:
             await context.close()
 
-    async def _extract_report_count(self, page: Page) -> int:
-        """Extract the report count number from the page content."""
-        # Strategy 1: Look for the report count in common DownDetector selectors
-        selectors = [
-            # Main report count display
-            "h2.entry-title",
-            ".entry-title",
-            # Chart area text
-            ".chart-count",
-            # Generic large number displays
-            "div.text-2xl",
-            "span.text-2xl",
-        ]
+    async def _extract_from_page(self, page: Page) -> tuple[int, Optional[str]]:
+        """Extract report count and status from the page.
 
-        for selector in selectors:
-            try:
-                element = await page.query_selector(selector)
-                if element:
-                    text = await element.inner_text()
-                    count = self._parse_count(text)
-                    if count is not None:
-                        return count
-            except Exception:
-                continue
+        Returns (report_count, status_string_or_None).
+        """
+        # Strategy 1: Extract from window.DD.currentServiceProperties JS object
+        # This is the most reliable source — embedded chart data with status.
+        try:
+            props = await page.evaluate(
+                "() => window.DD && window.DD.currentServiceProperties"
+            )
+            if props:
+                return self._parse_service_properties(props)
+        except Exception as exc:
+            logger.debug("JS evaluation failed: %s", exc)
 
-        # Strategy 2: Search the full page text for report patterns
+        # Strategy 2: Parse the JS from page source as regex fallback
+        html = await page.content()
+        result = self._parse_properties_from_html(html)
+        if result is not None:
+            return result
+
+        # Strategy 3: Text-based fallback
         body_text = await page.inner_text("body")
+
+        # Check for explicit "no current problems" message
+        if "no current problems" in body_text.lower():
+            return 0, "ok"
+
         count = self._parse_report_text(body_text)
         if count is not None:
-            return count
-
-        # Strategy 3: Check the page title or meta
-        title = await page.title()
-        count = self._parse_count(title)
-        if count is not None:
-            return count
+            return count, None
 
         logger.warning("Could not extract report count, defaulting to 0")
-        return 0
+        return 0, None
+
+    @staticmethod
+    def _parse_service_properties(props: dict) -> tuple[int, Optional[str]]:
+        """Parse the window.DD.currentServiceProperties object."""
+        # Map DD status strings to our status values
+        status_map = {
+            "success": "ok",
+            "warning": "warning",
+            "danger": "danger",
+        }
+        page_status = status_map.get(props.get("status", ""), None)
+
+        # Get the most recent report count from the series data
+        report_count = 0
+        try:
+            data_points = props["series"]["reports"]["data"]
+            if data_points:
+                # Last entry is the most recent 15-min interval
+                report_count = int(data_points[-1].get("y", 0))
+        except (KeyError, TypeError, IndexError):
+            pass
+
+        return report_count, page_status
+
+    @staticmethod
+    def _parse_properties_from_html(html: str) -> Optional[tuple[int, Optional[str]]]:
+        """Regex fallback: extract currentServiceProperties from raw HTML."""
+        # Extract status
+        status_match = re.search(
+            r"currentServiceProperties\s*=\s*\{[^}]*status:\s*'(\w+)'",
+            html,
+        )
+        status_map = {"success": "ok", "warning": "warning", "danger": "danger"}
+        page_status = status_map.get(
+            status_match.group(1), None
+        ) if status_match else None
+
+        # Extract the last y value from series data
+        y_values = re.findall(
+            r"\{\s*x:\s*'[^']+',\s*y:\s*(\d+)\s*\}",
+            html,
+        )
+        if y_values:
+            report_count = int(y_values[-1])
+            return report_count, page_status
+
+        # If we found status but no series data, still use it
+        if page_status == "ok":
+            return 0, page_status
+
+        return None
 
     @staticmethod
     def _parse_count(text: str) -> Optional[int]:
@@ -197,9 +244,7 @@ class DownDetectorScraper:
     @staticmethod
     def _classify_status(report_count: int) -> str:
         """Classify the severity based on report count."""
-        if report_count == 0:
-            return "ok"
-        elif report_count < 10:
+        if report_count < 10:
             return "ok"
         elif report_count < 50:
             return "warning"
