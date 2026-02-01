@@ -20,8 +20,8 @@ cp .env.example .env
 ```
 
 **Required settings:**
-- `GREENAPI_INSTANCE_ID` / `GREENAPI_API_TOKEN` - Get these from [GREEN-API](https://green-api.com/) (free developer tier)
-- `WHATSAPP_RECIPIENTS` - Comma-separated phone numbers with country code (e.g. `27821234567`)
+- `OPENCLAW_GATEWAY_URL` / `OPENCLAW_GATEWAY_TOKEN` - OpenClaw gateway endpoint and Bearer token
+- `WHATSAPP_RECIPIENTS` - Comma-separated phone numbers with country code (e.g. `27821234567`) or group JIDs (e.g. `120363044xxxxx@g.us`)
 
 ### 3. Run
 
@@ -49,9 +49,9 @@ All settings are configured via environment variables (`.env` file):
 | `DD_THRESHOLD` | `10` | Report count to trigger an alert |
 | `DD_POLL_INTERVAL` | `300` | Seconds between checks |
 | `DD_ALERT_COOLDOWN` | `1800` | Seconds before re-alerting for same service |
-| `GREENAPI_INSTANCE_ID` | - | GREEN-API instance ID |
-| `GREENAPI_API_TOKEN` | - | GREEN-API API token |
-| `WHATSAPP_RECIPIENTS` | - | Phone numbers to alert |
+| `OPENCLAW_GATEWAY_URL` | `http://127.0.0.1:18789` | OpenClaw gateway endpoint |
+| `OPENCLAW_GATEWAY_TOKEN` | - | OpenClaw Bearer token for auth |
+| `WHATSAPP_RECIPIENTS` | - | Phone numbers or group JIDs to alert |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 ## Docker
@@ -64,13 +64,14 @@ docker run --env-file .env ddbot
 ## Testing
 
 ```bash
+pip install -r requirements-dev.txt
 pytest tests/
 ```
 
 ## Architecture
 
-- **scraper.py** - Playwright-based DownDetector scraper with retry logic
-- **notifier.py** - WhatsApp message sending via GREEN-API
+- **scraper.py** - Playwright-based DownDetector scraper with fallback strategies
+- **notifier.py** - WhatsApp message sending via OpenClaw gateway
 - **history.py** - JSON-based alert history with cooldown enforcement
-- **config.py** - Environment-based configuration
+- **config.py** - Environment-based configuration with validation
 - **main.py** - Async polling loop with CLI interface

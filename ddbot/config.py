@@ -2,12 +2,16 @@
 
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
+
+_logger = logging.getLogger("ddbot.config")
+_SERVICE_PATTERN = re.compile(r"^[a-z0-9-]+$")
 
 # Project root is one level up from this file's directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -28,6 +32,20 @@ class Config:
     whatsapp_recipients: List[str] = field(default_factory=list)
     log_level: str = "INFO"
 
+    @staticmethod
+    def _safe_int(env_var: str, default: int) -> int:
+        """Parse an env var as int, falling back to default with a warning."""
+        raw = os.getenv(env_var)
+        if raw is None:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            _logger.warning(
+                "%s=%r is not a valid integer, using default %d", env_var, raw, default
+            )
+            return default
+
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "Config":
         """Load configuration from .env file and environment variables."""
@@ -39,14 +57,22 @@ class Config:
         services_raw = os.getenv("DD_SERVICES", "mtn")
         services = [s.strip().lower() for s in services_raw.split(",") if s.strip()]
 
+        # Validate service names (must be URL-safe slugs)
+        for svc in services:
+            if not _SERVICE_PATTERN.match(svc):
+                _logger.warning(
+                    "Service name %r does not match [a-z0-9-]+ pattern, skipping", svc
+                )
+        services = [s for s in services if _SERVICE_PATTERN.match(s)]
+
         recipients_raw = os.getenv("WHATSAPP_RECIPIENTS", "")
         recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
 
         return cls(
             services=services,
-            threshold=int(os.getenv("DD_THRESHOLD", "10")),
-            poll_interval=int(os.getenv("DD_POLL_INTERVAL", "300")),
-            alert_cooldown=int(os.getenv("DD_ALERT_COOLDOWN", "1800")),
+            threshold=cls._safe_int("DD_THRESHOLD", 10),
+            poll_interval=cls._safe_int("DD_POLL_INTERVAL", 300),
+            alert_cooldown=cls._safe_int("DD_ALERT_COOLDOWN", 1800),
             openclaw_gateway_url=os.getenv(
                 "OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789"
             ),

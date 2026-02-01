@@ -104,3 +104,31 @@ class TestAlertHistory:
         path.write_text("not valid json {{{")
         history = AlertHistory(history_file=path)
         assert len(history.get_all()) == 0
+
+    def test_corrupted_file_backed_up(self, tmp_path):
+        path = tmp_path / "history.json"
+        corrupt_content = "not valid json {{{"
+        path.write_text(corrupt_content)
+        AlertHistory(history_file=path)
+        bak = tmp_path / "history.json.bak"
+        assert bak.exists()
+        assert bak.read_text() == corrupt_content
+
+    def test_atomic_write_produces_valid_file(self, tmp_path):
+        path = tmp_path / "history.json"
+        history = AlertHistory(history_file=path)
+        history.record_alert("mtn", 20, ["27111"])
+        # File should exist and be valid JSON
+        assert path.exists()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert len(data) == 1
+        assert data[0]["service"] == "mtn"
+
+    def test_atomic_write_no_temp_files_left(self, tmp_path):
+        path = tmp_path / "history.json"
+        history = AlertHistory(history_file=path)
+        history.record_alert("mtn", 15, ["27111"])
+        history.record_alert("vodacom", 25, ["27222"])
+        # No .tmp files should remain in the directory
+        tmp_files = list(tmp_path.glob("*.tmp"))
+        assert tmp_files == []

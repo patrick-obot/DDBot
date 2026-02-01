@@ -2,6 +2,8 @@
 
 import json
 import logging
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -62,21 +64,42 @@ class AlertHistory:
                 self._records = [AlertRecord.from_dict(r) for r in data]
                 logger.debug("Loaded %d history records", len(self._records))
             except (json.JSONDecodeError, KeyError) as exc:
-                logger.warning("Corrupted history file, starting fresh: %s", exc)
+                bak = self._file.with_suffix(".json.bak")
+                logger.warning(
+                    "Corrupted history file, backing up to %s and starting fresh: %s",
+                    bak,
+                    exc,
+                )
+                try:
+                    os.replace(str(self._file), str(bak))
+                except OSError as rename_err:
+                    logger.warning("Failed to rename corrupt file: %s", rename_err)
                 self._records = []
         else:
             self._records = []
 
     def _save(self) -> None:
-        """Persist history to disk."""
+        """Persist history to disk atomically."""
         self._file.parent.mkdir(parents=True, exist_ok=True)
-        self._file.write_text(
-            json.dumps(
-                [r.to_dict() for r in self._records],
-                indent=2,
-            ),
-            encoding="utf-8",
+        content = json.dumps(
+            [r.to_dict() for r in self._records],
+            indent=2,
         )
+        # Write to temp file then atomically replace to prevent corruption
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self._file.parent), suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, str(self._file))
+        except BaseException:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def is_in_cooldown(self, service: str, cooldown_seconds: int) -> bool:
         """Check if an alert for this service was sent within the cooldown window."""

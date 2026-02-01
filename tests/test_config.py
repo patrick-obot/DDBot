@@ -133,3 +133,42 @@ class TestConfigValidation:
         )
         errors = config.validate()
         assert any("DD_POLL_INTERVAL" in e for e in errors)
+
+
+class TestSafeIntParsing:
+    def test_non_numeric_threshold_falls_back(self, monkeypatch):
+        monkeypatch.setenv("DD_THRESHOLD", "abc")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.threshold == 10
+
+    def test_non_numeric_poll_interval_falls_back(self, monkeypatch):
+        monkeypatch.setenv("DD_POLL_INTERVAL", "fast")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.poll_interval == 300
+
+    def test_non_numeric_alert_cooldown_falls_back(self, monkeypatch):
+        monkeypatch.setenv("DD_ALERT_COOLDOWN", "")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.alert_cooldown == 1800
+
+    def test_valid_int_still_works(self, monkeypatch):
+        monkeypatch.setenv("DD_THRESHOLD", "50")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.threshold == 50
+
+
+class TestServiceNameValidation:
+    def test_valid_service_names(self, monkeypatch):
+        monkeypatch.setenv("DD_SERVICES", "mtn,vodacom,rain-5g")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.services == ["mtn", "vodacom", "rain-5g"]
+
+    def test_invalid_service_name_filtered(self, monkeypatch):
+        monkeypatch.setenv("DD_SERVICES", "mtn,bad service!,vodacom")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.services == ["mtn", "vodacom"]
+
+    def test_all_invalid_services_returns_empty(self, monkeypatch):
+        monkeypatch.setenv("DD_SERVICES", "bad name,@invalid")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.services == []

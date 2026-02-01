@@ -6,10 +6,12 @@ import logging
 import signal
 import sys
 
-from ddbot.config import Config, setup_logging
+from ddbot.config import Config, DATA_DIR, setup_logging
 from ddbot.history import AlertHistory
 from ddbot.notifier import WhatsAppNotifier
 from ddbot.scraper import DownDetectorScraper
+
+HEARTBEAT_FILE = DATA_DIR / "heartbeat"
 
 logger: logging.Logger | None = None
 
@@ -82,6 +84,7 @@ async def run_loop(config: Config) -> None:
     scraper = DownDetectorScraper()
     notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
     history = AlertHistory()
+    consecutive_failures = 0
 
     await scraper.start()
     try:
@@ -94,7 +97,28 @@ async def run_loop(config: Config) -> None:
         )
 
         while not _shutdown.is_set():
-            await poll_once(scraper, notifier, history, config)
+            try:
+                await poll_once(scraper, notifier, history, config)
+                if consecutive_failures > 0:
+                    logger.info(
+                        "Poll succeeded after %d consecutive failure(s)",
+                        consecutive_failures,
+                    )
+                consecutive_failures = 0
+                # Touch heartbeat for Docker HEALTHCHECK
+                try:
+                    HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    HEARTBEAT_FILE.touch()
+                except OSError:
+                    pass
+            except Exception as exc:
+                consecutive_failures += 1
+                logger.error(
+                    "Poll failed (consecutive failures: %d): %s",
+                    consecutive_failures,
+                    exc,
+                    exc_info=True,
+                )
 
             # Wait for poll_interval or until shutdown signal
             try:
@@ -151,37 +175,49 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     global logger
 
-    args = parse_args(argv)
-    config = Config.from_env(env_path=args.env)
-    logger = setup_logging(config.log_level)
-
-    # Validate config (skip WhatsApp validation in dry-run mode)
-    errors = config.validate()
-    if args.dry_run:
-        errors = [e for e in errors if "OPENCLAW" not in e and "WHATSAPP_RECIPIENTS" not in e]
-    if errors:
-        for err in errors:
-            logger.error("Config error: %s", err)
+    try:
+        args = parse_args(argv)
+        config = Config.from_env(env_path=args.env)
+        logger = setup_logging(config.log_level)
+    except Exception as exc:
+        # Fallback logging if config parsing fails
+        logging.basicConfig(level=logging.ERROR)
+        logging.error("Failed to initialize: %s", exc)
         sys.exit(1)
 
-    # Register signal handlers (best-effort on Windows)
-    loop = asyncio.new_event_loop()
     try:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, _handle_signal, sig)
-    except NotImplementedError:
-        # Windows doesn't support add_signal_handler for all signals
-        pass
+        # Validate config (skip WhatsApp validation in dry-run mode)
+        errors = config.validate()
+        if args.dry_run:
+            errors = [e for e in errors if "OPENCLAW" not in e and "WHATSAPP_RECIPIENTS" not in e]
+        if errors:
+            for err in errors:
+                logger.error("Config error: %s", err)
+            sys.exit(1)
 
-    services = [args.service] if args.service else None
+        # Register signal handlers (best-effort on Windows)
+        loop = asyncio.new_event_loop()
+        try:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, _handle_signal, sig)
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler for all signals
+            pass
 
-    if args.once:
-        logger.info("Running single check mode")
-        loop.run_until_complete(run_once(config, services=services))
-    else:
-        loop.run_until_complete(run_loop(config))
+        services = [args.service] if args.service else None
 
-    loop.close()
+        if args.once:
+            logger.info("Running single check mode")
+            loop.run_until_complete(run_once(config, services=services))
+        else:
+            loop.run_until_complete(run_loop(config))
+
+        loop.close()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        logger.error("Fatal error: %s", exc, exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
