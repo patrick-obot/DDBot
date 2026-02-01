@@ -1,9 +1,9 @@
-"""WhatsApp notification sending via GREEN-API."""
+"""WhatsApp notification sending via OpenClaw gateway."""
 
 import logging
-from typing import List, Optional
+from typing import List
 
-from whatsapp_api_client_python import API as GreenAPI
+import requests
 
 logger = logging.getLogger("ddbot.notifier")
 
@@ -21,43 +21,53 @@ def format_alert_message(
     )
 
 
-def format_phone_for_greenapi(phone: str) -> str:
-    """Ensure phone number is in GREEN-API format: <number>@c.us."""
-    phone = phone.strip().replace("+", "").replace(" ", "").replace("-", "")
-    if not phone.endswith("@c.us"):
-        phone = f"{phone}@c.us"
-    return phone
+def normalize_phone(phone: str) -> str:
+    """Normalize phone number: strip whitespace, +, dashes."""
+    return phone.strip().replace("+", "").replace(" ", "").replace("-", "")
 
 
 class WhatsAppNotifier:
-    """Sends WhatsApp messages via GREEN-API."""
+    """Sends WhatsApp messages via OpenClaw's /tools/invoke endpoint."""
 
-    def __init__(self, instance_id: str, api_token: str):
-        self._instance_id = instance_id
-        self._api_token = api_token
-        self._api: Optional[GreenAPI] = None
-
-    def _get_api(self) -> GreenAPI:
-        """Lazily initialise the GREEN-API client."""
-        if self._api is None:
-            self._api = GreenAPI.GreenApi(self._instance_id, self._api_token)
-        return self._api
+    def __init__(self, gateway_url: str, gateway_token: str):
+        self._gateway_url = gateway_url.rstrip("/")
+        self._gateway_token = gateway_token
 
     def send_message(self, phone: str, message: str) -> bool:
-        """Send a single WhatsApp message. Returns True on success."""
-        chat_id = format_phone_for_greenapi(phone)
+        """Send a single WhatsApp message via OpenClaw. Returns True on success."""
+        phone = normalize_phone(phone)
+        endpoint = f"{self._gateway_url}/tools/invoke"
         try:
-            api = self._get_api()
-            response = api.sending.sendMessage(chat_id, message)
-            response_data = response.data
-            if isinstance(response_data, dict) and response_data.get("idMessage"):
-                logger.info("Message sent to %s (id=%s)", chat_id, response_data["idMessage"])
+            resp = requests.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {self._gateway_token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "tool": "messaging",
+                    "action": "send",
+                    "args": {
+                        "channel": "whatsapp",
+                        "to": phone,
+                        "text": message,
+                    },
+                },
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                logger.info("Message sent to %s via OpenClaw", phone)
                 return True
             else:
-                logger.error("Unexpected response sending to %s: %s", chat_id, response_data)
+                logger.error(
+                    "OpenClaw returned %d for %s: %s",
+                    resp.status_code,
+                    phone,
+                    resp.text[:200],
+                )
                 return False
         except Exception as exc:
-            logger.error("Failed to send message to %s: %s", chat_id, exc)
+            logger.error("Failed to send message to %s: %s", phone, exc)
             return False
 
     def send_alert(
@@ -69,18 +79,27 @@ class WhatsAppNotifier:
     ) -> List[str]:
         """Send alert to all recipients. Returns list of successfully notified numbers."""
         message = format_alert_message(service, report_count, threshold)
-        logger.info("Sending alert for %s (%d reports) to %d recipients", service, report_count, len(recipients))
+        logger.info(
+            "Sending alert for %s (%d reports) to %d recipients",
+            service,
+            report_count,
+            len(recipients),
+        )
 
         sent_to = []
         for phone in recipients:
             if self.send_message(phone, message):
                 sent_to.append(phone)
 
-        logger.info("Alert delivered to %d/%d recipients", len(sent_to), len(recipients))
+        logger.info(
+            "Alert delivered to %d/%d recipients",
+            len(sent_to),
+            len(recipients),
+        )
         return sent_to
 
     def send_test_message(self, phone: str) -> bool:
-        """Send a test message to verify credentials and delivery."""
+        """Send a test message to verify OpenClaw WhatsApp delivery."""
         return self.send_message(
             phone,
             "\u2705 DDBot test message - WhatsApp integration is working!",

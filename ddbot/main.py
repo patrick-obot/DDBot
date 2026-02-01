@@ -80,7 +80,7 @@ async def poll_once(
 async def run_loop(config: Config) -> None:
     """Main polling loop."""
     scraper = DownDetectorScraper()
-    notifier = WhatsAppNotifier(config.greenapi_instance_id, config.greenapi_api_token)
+    notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
     history = AlertHistory()
 
     await scraper.start()
@@ -110,7 +110,7 @@ async def run_loop(config: Config) -> None:
 async def run_once(config: Config, services: list[str] | None = None) -> None:
     """Single check mode (--once)."""
     scraper = DownDetectorScraper()
-    notifier = WhatsAppNotifier(config.greenapi_instance_id, config.greenapi_api_token)
+    notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
     history = AlertHistory()
 
     await scraper.start()
@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> None:
     # Validate config (skip WhatsApp validation in dry-run mode)
     errors = config.validate()
     if args.dry_run:
-        errors = [e for e in errors if "GREENAPI" not in e and "WHATSAPP_RECIPIENTS" not in e]
+        errors = [e for e in errors if "OPENCLAW" not in e and "WHATSAPP_RECIPIENTS" not in e]
     if errors:
         for err in errors:
             logger.error("Config error: %s", err)

@@ -23,8 +23,8 @@ class Config:
     threshold: int = 10
     poll_interval: int = 300
     alert_cooldown: int = 1800
-    greenapi_instance_id: str = ""
-    greenapi_api_token: str = ""
+    openclaw_gateway_url: str = "http://127.0.0.1:18789"
+    openclaw_gateway_token: str = ""
     whatsapp_recipients: List[str] = field(default_factory=list)
     log_level: str = "INFO"
 
@@ -47,8 +47,10 @@ class Config:
             threshold=int(os.getenv("DD_THRESHOLD", "10")),
             poll_interval=int(os.getenv("DD_POLL_INTERVAL", "300")),
             alert_cooldown=int(os.getenv("DD_ALERT_COOLDOWN", "1800")),
-            greenapi_instance_id=os.getenv("GREENAPI_INSTANCE_ID", ""),
-            greenapi_api_token=os.getenv("GREENAPI_API_TOKEN", ""),
+            openclaw_gateway_url=os.getenv(
+                "OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789"
+            ),
+            openclaw_gateway_token=os.getenv("OPENCLAW_GATEWAY_TOKEN", ""),
             whatsapp_recipients=recipients,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
@@ -64,10 +66,8 @@ class Config:
             errors.append("DD_POLL_INTERVAL must be >= 10 seconds")
         if self.alert_cooldown < 0:
             errors.append("DD_ALERT_COOLDOWN must be >= 0")
-        if not self.greenapi_instance_id or not self.greenapi_api_token:
-            errors.append(
-                "GREENAPI_INSTANCE_ID and GREENAPI_API_TOKEN are required"
-            )
+        if not self.openclaw_gateway_token:
+            errors.append("OPENCLAW_GATEWAY_TOKEN is required")
         if not self.whatsapp_recipients:
             errors.append("WHATSAPP_RECIPIENTS must contain at least one number")
         if self.log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):

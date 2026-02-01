@@ -2,7 +2,7 @@
 
 import pytest
 
-from ddbot.notifier import format_alert_message, format_phone_for_greenapi
+from ddbot.notifier import format_alert_message, normalize_phone
 
 
 class TestFormatAlertMessage:
@@ -31,18 +31,15 @@ class TestFormatAlertMessage:
         assert "\u26a0" in msg
 
 
-class TestFormatPhone:
+class TestNormalizePhone:
     def test_plain_number(self):
-        assert format_phone_for_greenapi("27821234567") == "27821234567@c.us"
+        assert normalize_phone("27821234567") == "27821234567"
 
     def test_plus_prefix(self):
-        assert format_phone_for_greenapi("+27821234567") == "27821234567@c.us"
-
-    def test_already_formatted(self):
-        assert format_phone_for_greenapi("27821234567@c.us") == "27821234567@c.us"
+        assert normalize_phone("+27821234567") == "27821234567"
 
     def test_strips_spaces(self):
-        assert format_phone_for_greenapi("  27 82 123 4567 ") == "27821234567@c.us"
+        assert normalize_phone("  27 82 123 4567 ") == "27821234567"
 
     def test_strips_dashes(self):
-        assert format_phone_for_greenapi("27-82-123-4567") == "27821234567@c.us"
+        assert normalize_phone("27-82-123-4567") == "27821234567"
