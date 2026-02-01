@@ -30,7 +30,7 @@ class TestConfigDefaults:
 
     def test_default_poll_interval(self):
         config = Config()
-        assert config.poll_interval == 300
+        assert config.poll_interval == 1800
 
     def test_default_cooldown(self):
         config = Config()
@@ -144,7 +144,7 @@ class TestSafeIntParsing:
     def test_non_numeric_poll_interval_falls_back(self, monkeypatch):
         monkeypatch.setenv("DD_POLL_INTERVAL", "fast")
         config = Config.from_env(env_path="/dev/null")
-        assert config.poll_interval == 300
+        assert config.poll_interval == 1800
 
     def test_non_numeric_alert_cooldown_falls_back(self, monkeypatch):
         monkeypatch.setenv("DD_ALERT_COOLDOWN", "")
@@ -172,3 +172,54 @@ class TestServiceNameValidation:
         monkeypatch.setenv("DD_SERVICES", "bad name,@invalid")
         config = Config.from_env(env_path="/dev/null")
         assert config.services == []
+
+
+class TestActiveHoursConfig:
+    def test_default_active_hours(self):
+        config = Config()
+        assert config.active_hours_start == 7
+        assert config.active_hours_end == 20
+        assert config.timezone == "Africa/Johannesburg"
+
+    def test_default_poll_interval_is_1800(self):
+        config = Config()
+        assert config.poll_interval == 1800
+
+    def test_active_hours_from_env(self, monkeypatch):
+        monkeypatch.setenv("DD_ACTIVE_HOURS_START", "8")
+        monkeypatch.setenv("DD_ACTIVE_HOURS_END", "18")
+        monkeypatch.setenv("DD_TIMEZONE", "UTC")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.active_hours_start == 8
+        assert config.active_hours_end == 18
+        assert config.timezone == "UTC"
+
+    def test_start_ge_end_fails_validation(self):
+        config = Config(
+            active_hours_start=20,
+            active_hours_end=7,
+            openclaw_gateway_token="t",
+            whatsapp_recipients=["27000"],
+        )
+        errors = config.validate()
+        assert any("ACTIVE_HOURS" in e for e in errors)
+
+    def test_equal_start_end_fails_validation(self):
+        config = Config(
+            active_hours_start=10,
+            active_hours_end=10,
+            openclaw_gateway_token="t",
+            whatsapp_recipients=["27000"],
+        )
+        errors = config.validate()
+        assert any("ACTIVE_HOURS" in e for e in errors)
+
+    def test_invalid_hour_fails_validation(self):
+        config = Config(
+            active_hours_start=25,
+            active_hours_end=20,
+            openclaw_gateway_token="t",
+            whatsapp_recipients=["27000"],
+        )
+        errors = config.validate()
+        assert any("ACTIVE_HOURS_START" in e for e in errors)

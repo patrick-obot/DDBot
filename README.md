@@ -47,8 +47,11 @@ All settings are configured via environment variables (`.env` file):
 |----------|---------|-------------|
 | `DD_SERVICES` | `mtn` | Comma-separated services to monitor |
 | `DD_THRESHOLD` | `10` | Report count to trigger an alert |
-| `DD_POLL_INTERVAL` | `300` | Seconds between checks |
+| `DD_POLL_INTERVAL` | `1800` | Seconds between checks (default: 30 min) |
 | `DD_ALERT_COOLDOWN` | `1800` | Seconds before re-alerting for same service |
+| `DD_ACTIVE_HOURS_START` | `7` | Hour to start polling (24h format) |
+| `DD_ACTIVE_HOURS_END` | `20` | Hour to stop polling (24h format) |
+| `DD_TIMEZONE` | `Africa/Johannesburg` | Timezone for active hours |
 | `OPENCLAW_GATEWAY_URL` | `http://127.0.0.1:18789` | OpenClaw gateway endpoint |
 | `OPENCLAW_GATEWAY_TOKEN` | - | OpenClaw Bearer token for auth |
 | `WHATSAPP_RECIPIENTS` | - | Phone numbers or group JIDs to alert |

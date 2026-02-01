@@ -25,8 +25,11 @@ class Config:
 
     services: List[str] = field(default_factory=lambda: ["mtn"])
     threshold: int = 10
-    poll_interval: int = 300
+    poll_interval: int = 1800
     alert_cooldown: int = 1800
+    active_hours_start: int = 7
+    active_hours_end: int = 20
+    timezone: str = "Africa/Johannesburg"
     openclaw_gateway_url: str = "http://127.0.0.1:18789"
     openclaw_gateway_token: str = ""
     whatsapp_recipients: List[str] = field(default_factory=list)
@@ -71,8 +74,11 @@ class Config:
         return cls(
             services=services,
             threshold=cls._safe_int("DD_THRESHOLD", 10),
-            poll_interval=cls._safe_int("DD_POLL_INTERVAL", 300),
+            poll_interval=cls._safe_int("DD_POLL_INTERVAL", 1800),
             alert_cooldown=cls._safe_int("DD_ALERT_COOLDOWN", 1800),
+            active_hours_start=cls._safe_int("DD_ACTIVE_HOURS_START", 7),
+            active_hours_end=cls._safe_int("DD_ACTIVE_HOURS_END", 20),
+            timezone=os.getenv("DD_TIMEZONE", "Africa/Johannesburg"),
             openclaw_gateway_url=os.getenv(
                 "OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789"
             ),
@@ -92,6 +98,12 @@ class Config:
             errors.append("DD_POLL_INTERVAL must be >= 10 seconds")
         if self.alert_cooldown < 0:
             errors.append("DD_ALERT_COOLDOWN must be >= 0")
+        if not 0 <= self.active_hours_start <= 23:
+            errors.append("DD_ACTIVE_HOURS_START must be 0-23")
+        if not 0 <= self.active_hours_end <= 23:
+            errors.append("DD_ACTIVE_HOURS_END must be 0-23")
+        if self.active_hours_start >= self.active_hours_end:
+            errors.append("DD_ACTIVE_HOURS_START must be less than DD_ACTIVE_HOURS_END")
         if not self.openclaw_gateway_token:
             errors.append("OPENCLAW_GATEWAY_TOKEN is required")
         if not self.whatsapp_recipients:

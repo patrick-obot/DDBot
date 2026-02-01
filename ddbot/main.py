@@ -5,6 +5,8 @@ import asyncio
 import logging
 import signal
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ddbot.config import Config, DATA_DIR, setup_logging
 from ddbot.history import AlertHistory
@@ -23,6 +25,13 @@ def _handle_signal(sig: signal.Signals) -> None:
     logger_to_use = logger or logging.getLogger("ddbot")
     logger_to_use.info("Received %s, shutting down...", sig.name)
     _shutdown.set()
+
+
+def is_within_active_hours(config: Config) -> bool:
+    """Check if current time is within configured active hours."""
+    tz = ZoneInfo(config.timezone)
+    current_hour = datetime.now(tz).hour
+    return config.active_hours_start <= current_hour < config.active_hours_end
 
 
 async def poll_once(
@@ -97,28 +106,36 @@ async def run_loop(config: Config) -> None:
         )
 
         while not _shutdown.is_set():
-            try:
-                await poll_once(scraper, notifier, history, config)
-                if consecutive_failures > 0:
-                    logger.info(
-                        "Poll succeeded after %d consecutive failure(s)",
-                        consecutive_failures,
-                    )
-                consecutive_failures = 0
-                # Touch heartbeat for Docker HEALTHCHECK
-                try:
-                    HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
-                    HEARTBEAT_FILE.touch()
-                except OSError:
-                    pass
-            except Exception as exc:
-                consecutive_failures += 1
-                logger.error(
-                    "Poll failed (consecutive failures: %d): %s",
-                    consecutive_failures,
-                    exc,
-                    exc_info=True,
+            if not is_within_active_hours(config):
+                logger.debug(
+                    "Outside active hours (%02d:00-%02d:00 %s), skipping poll",
+                    config.active_hours_start,
+                    config.active_hours_end,
+                    config.timezone,
                 )
+            else:
+                try:
+                    await poll_once(scraper, notifier, history, config)
+                    if consecutive_failures > 0:
+                        logger.info(
+                            "Poll succeeded after %d consecutive failure(s)",
+                            consecutive_failures,
+                        )
+                    consecutive_failures = 0
+                    # Touch heartbeat for Docker HEALTHCHECK
+                    try:
+                        HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+                        HEARTBEAT_FILE.touch()
+                    except OSError:
+                        pass
+                except Exception as exc:
+                    consecutive_failures += 1
+                    logger.error(
+                        "Poll failed (consecutive failures: %d): %s",
+                        consecutive_failures,
+                        exc,
+                        exc_info=True,
+                    )
 
             # Wait for poll_interval or until shutdown signal
             try:
