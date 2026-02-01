@@ -21,22 +21,41 @@ def format_alert_message(
     )
 
 
-def normalize_phone(phone: str) -> str:
-    """Normalize phone number: strip whitespace, +, dashes."""
-    return phone.strip().replace("+", "").replace(" ", "").replace("-", "")
+def is_group_jid(recipient: str) -> bool:
+    """Check if recipient is a WhatsApp group JID (ends with @g.us)."""
+    return recipient.strip().endswith("@g.us")
+
+
+def normalize_recipient(recipient: str) -> str:
+    """Normalize a recipient: group JIDs are kept as-is, phone numbers get cleaned."""
+    recipient = recipient.strip()
+    if is_group_jid(recipient):
+        return recipient
+    return recipient.replace("+", "").replace(" ", "").replace("-", "")
+
+
+def format_recipient_for_openclaw(recipient: str) -> str:
+    """Format recipient for the OpenClaw 'to' field.
+
+    Group JIDs are passed as-is; phone numbers get a + prefix.
+    """
+    normalized = normalize_recipient(recipient)
+    if is_group_jid(normalized):
+        return normalized
+    return f"+{normalized}"
 
 
 class WhatsAppNotifier:
-    """Sends WhatsApp messages via OpenClaw's /tools/invoke endpoint."""
+    """Sends WhatsApp messages via OpenClaw's /hooks/agent endpoint."""
 
     def __init__(self, gateway_url: str, gateway_token: str):
         self._gateway_url = gateway_url.rstrip("/")
         self._gateway_token = gateway_token
 
-    def send_message(self, phone: str, message: str) -> bool:
-        """Send a single WhatsApp message via OpenClaw. Returns True on success."""
-        phone = normalize_phone(phone)
-        endpoint = f"{self._gateway_url}/tools/invoke"
+    def send_message(self, recipient: str, message: str) -> bool:
+        """Send a WhatsApp message to a phone number or group. Returns True on success."""
+        to = format_recipient_for_openclaw(recipient)
+        endpoint = f"{self._gateway_url}/hooks/agent"
         try:
             resp = requests.post(
                 endpoint,
@@ -45,29 +64,26 @@ class WhatsAppNotifier:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "tool": "messaging",
-                    "action": "send",
-                    "args": {
-                        "channel": "whatsapp",
-                        "to": phone,
-                        "text": message,
-                    },
+                    "message": f"Reply with exactly this text and nothing else:\n\n{message}",
+                    "deliver": True,
+                    "channel": "whatsapp",
+                    "to": to,
                 },
                 timeout=30,
             )
-            if resp.status_code == 200:
-                logger.info("Message sent to %s via OpenClaw", phone)
+            if resp.status_code == 202:
+                logger.info("Message sent to %s via OpenClaw", to)
                 return True
             else:
                 logger.error(
                     "OpenClaw returned %d for %s: %s",
                     resp.status_code,
-                    phone,
+                    to,
                     resp.text[:200],
                 )
                 return False
         except Exception as exc:
-            logger.error("Failed to send message to %s: %s", phone, exc)
+            logger.error("Failed to send message to %s: %s", to, exc)
             return False
 
     def send_alert(

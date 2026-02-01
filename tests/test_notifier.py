@@ -2,7 +2,12 @@
 
 import pytest
 
-from ddbot.notifier import format_alert_message, normalize_phone
+from ddbot.notifier import (
+    format_alert_message,
+    format_recipient_for_openclaw,
+    is_group_jid,
+    normalize_recipient,
+)
 
 
 class TestFormatAlertMessage:
@@ -31,15 +36,46 @@ class TestFormatAlertMessage:
         assert "\u26a0" in msg
 
 
-class TestNormalizePhone:
-    def test_plain_number(self):
-        assert normalize_phone("27821234567") == "27821234567"
+class TestIsGroupJid:
+    def test_group_jid(self):
+        assert is_group_jid("120363044xxxxx@g.us") is True
 
-    def test_plus_prefix(self):
-        assert normalize_phone("+27821234567") == "27821234567"
+    def test_group_jid_with_whitespace(self):
+        assert is_group_jid("  120363044xxxxx@g.us ") is True
 
-    def test_strips_spaces(self):
-        assert normalize_phone("  27 82 123 4567 ") == "27821234567"
+    def test_phone_number(self):
+        assert is_group_jid("27821234567") is False
 
-    def test_strips_dashes(self):
-        assert normalize_phone("27-82-123-4567") == "27821234567"
+    def test_phone_with_plus(self):
+        assert is_group_jid("+27821234567") is False
+
+
+class TestNormalizeRecipient:
+    def test_phone_strips_plus(self):
+        assert normalize_recipient("+27821234567") == "27821234567"
+
+    def test_phone_strips_spaces(self):
+        assert normalize_recipient("  27 82 123 4567 ") == "27821234567"
+
+    def test_phone_strips_dashes(self):
+        assert normalize_recipient("27-82-123-4567") == "27821234567"
+
+    def test_group_jid_unchanged(self):
+        assert normalize_recipient("120363044xxxxx@g.us") == "120363044xxxxx@g.us"
+
+    def test_group_jid_strips_whitespace(self):
+        assert normalize_recipient("  120363044xxxxx@g.us  ") == "120363044xxxxx@g.us"
+
+
+class TestFormatRecipientForOpenclaw:
+    def test_phone_gets_plus_prefix(self):
+        assert format_recipient_for_openclaw("27821234567") == "+27821234567"
+
+    def test_phone_with_plus_no_double(self):
+        assert format_recipient_for_openclaw("+27821234567") == "+27821234567"
+
+    def test_group_jid_no_plus(self):
+        assert format_recipient_for_openclaw("120363044xxxxx@g.us") == "120363044xxxxx@g.us"
+
+    def test_phone_cleans_and_prefixes(self):
+        assert format_recipient_for_openclaw("  27-82-123-4567 ") == "+27821234567"
