@@ -4,7 +4,7 @@
 DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage reports and sends WhatsApp alerts via OpenClaw gateway when report counts exceed a threshold.
 
 ## Architecture
-- **ddbot/scraper.py** — Playwright-based scraper with 3 fallback strategies: JS object extraction → regex HTML parsing → text-based fallback. Anti-detection: `playwright-stealth` patches (navigator.webdriver, chrome runtime, permissions, plugins, languages), rotates user-agents from a pool of 6, reuses a persistent browser context/page across services, randomizes page wait times (2-5s). Cloudflare challenge detection with up to 15s auto-resolve wait
+- **ddbot/scraper.py** — Two-tier scraper: `curl_cffi` primary (browser TLS fingerprint impersonation via `impersonate="chrome"`) with lazy Playwright fallback. curl_cffi path uses regex HTML parsing → text-based fallback for data extraction. Detects Cloudflare challenges via markers ("just a moment", "verify you are human", "checking your browser", "cf-challenge") and falls back to Playwright automatically. Playwright fallback uses **connect-over-CDP**: launches a standalone Chrome subprocess with `--remote-debugging-port`, then connects Playwright via `connect_over_cdp()` — this bypasses Cloudflare's fingerprinting of Playwright-launched browsers. Chrome binary auto-detected or set via `DD_CHROME_PATH`. Temp user-data-dir created per session and cleaned up on stop. Playwright fallback adds JS object extraction (window.DD) as Strategy 1. Anti-detection: `playwright-stealth` patches, rotates user-agents from a pool of 6, randomizes page wait times (2-5s). Cloudflare Turnstile checkbox click with up to 15s auto-resolve wait. Cookie consent popups auto-dismissed before data extraction. `ScrapeResult.source` field tracks which engine produced the result ("curl", "playwright", or "error")
 - **ddbot/notifier.py** — WhatsApp messaging via OpenClaw `/hooks/agent` endpoint. Supports phone numbers and group JIDs (`@g.us`)
 - **ddbot/history.py** — JSON-based alert history persistence with cooldown logic. Atomic file writes (temp + `os.replace`). Corrupt files backed up to `.bak`
 - **ddbot/config.py** — Environment variable config with validation, logging setup. Safe int parsing with fallback defaults. Service name validation (`^[a-z0-9-]+$`)
@@ -15,7 +15,7 @@ DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage r
 - Switched from GREEN-API to OpenClaw gateway (commit f0677ad)
 - Using OpenClaw `/hooks/agent` endpoint with Bearer token auth, expects HTTP 202 (commit db6730d)
 - Message format wraps content in "Reply with exactly this text..." instruction for OpenClaw agent
-- Scraper uses Playwright headless with `playwright-stealth` and user-agent spoofing to bypass Cloudflare Turnstile. Detects challenge pages ("Just a moment" / "Verify you are human") and waits up to 15s for auto-resolve
+- Scraper uses `curl_cffi` as primary engine (lightweight HTTP with Chrome TLS fingerprint) and falls back to Playwright only when Cloudflare challenges are detected. Playwright fallback uses connect-over-CDP (standalone Chrome subprocess + `connect_over_cdp()`) to avoid Cloudflare fingerprinting of Playwright-launched browsers. Cookie consent popups auto-dismissed. Detects challenge pages via markers ("just a moment", "verify you are human", "checking your browser", "cf-challenge")
 - Alert cooldown default: 30 min per service. Polling interval default: 30 min. Threshold default: 10 reports.
 - Active hours: only polls between 07:00-20:00 SAST by default to reduce bot-detection risk. `--once` bypasses active hours.
 - Runtime deps pinned to exact versions in `requirements.txt`; dev/test deps split to `requirements-dev.txt`
@@ -32,6 +32,7 @@ DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage r
 - `DD_TIMEZONE` — timezone for active hours (default: Africa/Johannesburg)
 - `DD_SCRAPE_DELAY_MIN` — minimum seconds between service scrapes (default: 5)
 - `DD_SCRAPE_DELAY_MAX` — maximum seconds between service scrapes (default: 15)
+- `DD_CHROME_PATH` — explicit path to Chrome/Chromium binary for Playwright CDP fallback (default: auto-detect)
 - `OPENCLAW_GATEWAY_URL` — OpenClaw endpoint (default: http://127.0.0.1:18789)
 - `OPENCLAW_GATEWAY_TOKEN` — Bearer token for auth
 - `WHATSAPP_RECIPIENTS` — comma-separated phone numbers or group JIDs

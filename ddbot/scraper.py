@@ -1,17 +1,24 @@
-"""DownDetector scraper using Playwright."""
+"""DownDetector scraper using curl_cffi (primary) with Playwright fallback."""
 
 import asyncio
 import json
 import logging
+import os
+import platform
 import random
 import re
-from dataclasses import dataclass
+import shutil
+import socket
+import subprocess
+import tempfile
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.request import urlopen
+from urllib.error import URLError
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-from playwright_stealth import Stealth
+from curl_cffi.requests import AsyncSession
 
 from ddbot.config import DATA_DIR
 
@@ -34,6 +41,22 @@ _USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
 ]
 
+_CF_CHALLENGE_MARKERS = [
+    "just a moment",
+    "verify you are human",
+    "checking your browser",
+    "cf-challenge",
+]
+
+
+class CurlBlockedError(Exception):
+    """Raised when curl_cffi request is blocked (Cloudflare challenge or non-200)."""
+
+    def __init__(self, status_code: int, reason: str):
+        self.status_code = status_code
+        self.reason = reason
+        super().__init__(f"Blocked (status={status_code}): {reason}")
+
 
 @dataclass
 class ScrapeResult:
@@ -44,85 +67,288 @@ class ScrapeResult:
     timestamp: str
     status: str  # "ok", "warning", "danger", "error"
     error: Optional[str] = None
+    source: str = "curl"
 
 
 class DownDetectorScraper:
-    """Scrapes DownDetector.co.za for service outage report counts."""
+    """Scrapes DownDetector.co.za for service outage report counts.
 
-    def __init__(self, headless: bool = True, debug_dump: bool = False):
+    Uses curl_cffi as the primary scraper (lightweight HTTP with browser TLS
+    fingerprint impersonation). Falls back to Playwright only when curl_cffi
+    encounters a Cloudflare challenge that requires a real browser.
+    """
+
+    def __init__(self, headless: bool = True, debug_dump: bool = False, chrome_path: str = ""):
         self._headless = headless
         self._debug_dump = debug_dump
+        self._chrome_path = chrome_path
+        # curl_cffi session
+        self._curl_session: Optional[AsyncSession] = None
+        self._curl_ua: Optional[str] = None
+        # Playwright (lazy-initialized via CDP)
         self._playwright = None
-        self._browser: Optional[Browser] = None
-        self._context: Optional[BrowserContext] = None
-        self._page: Optional[Page] = None
+        self._browser = None
+        self._context = None
+        self._page = None
+        self._playwright_started = False
+        # Chrome subprocess for CDP connection
+        self._chrome_process: Optional[subprocess.Popen] = None
+        self._temp_profile_dir: Optional[str] = None
+        self._cdp_port: Optional[int] = None
 
     async def start(self) -> None:
-        """Launch the browser and create a persistent context with a random user-agent."""
+        """Initialize the curl_cffi session. Playwright is lazy-started on demand."""
+        self._curl_ua = random.choice(_USER_AGENTS)
+        self._curl_session = AsyncSession(
+            impersonate="chrome",
+            headers={
+                "User-Agent": self._curl_ua,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Referer": "https://downdetector.co.za/",
+            },
+        )
+        logger.info("curl_cffi session started (ua=%s)", self._curl_ua[:50])
+
+    @staticmethod
+    def _find_chrome_executable(configured_path: str = "") -> str:
+        """Locate Chrome binary. Check configured path, then common locations."""
+        if configured_path and Path(configured_path).is_file():
+            return configured_path
+
+        candidates: list[str] = []
+        if platform.system() == "Windows":
+            for env_var in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+                base = os.environ.get(env_var, "")
+                if base:
+                    candidates.append(
+                        str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
+                    )
+        else:
+            candidates.extend([
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/chromium",
+                "/snap/bin/chromium",
+            ])
+            # macOS
+            candidates.append(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            )
+
+        for path in candidates:
+            if Path(path).is_file():
+                return path
+
+        raise FileNotFoundError(
+            "Chrome executable not found. Install Google Chrome or set DD_CHROME_PATH."
+        )
+
+    @staticmethod
+    def _find_free_port() -> int:
+        """Find an available port using OS assignment."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    async def _wait_for_cdp_ready(self, port: int, timeout: float = 15) -> None:
+        """Poll Chrome's CDP /json/version endpoint until ready."""
+        url = f"http://127.0.0.1:{port}/json/version"
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                resp = urlopen(url, timeout=2)
+                if resp.status == 200:
+                    return
+            except (URLError, OSError):
+                pass
+            await asyncio.sleep(0.5)
+        raise TimeoutError(f"Chrome CDP endpoint not ready after {timeout}s on port {port}")
+
+    async def _ensure_playwright(self) -> None:
+        """Lazy-initialize: launch Chrome subprocess + connect via CDP."""
+        if self._playwright_started:
+            return
+
+        from playwright.async_api import async_playwright
+        from playwright_stealth import Stealth
+
+        # 1. Find Chrome and a free port
+        chrome_exe = self._find_chrome_executable(self._chrome_path)
+        port = self._find_free_port()
+        self._cdp_port = port
+
+        # 2. Create temp profile dir
+        self._temp_profile_dir = tempfile.mkdtemp(prefix="ddbot_chrome_")
+
+        # 3. Launch Chrome subprocess
+        chrome_args = [
+            chrome_exe,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={self._temp_profile_dir}",
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+        ]
+        if self._headless:
+            chrome_args.append("--headless=new")
+
+        self._chrome_process = subprocess.Popen(
+            chrome_args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        logger.info(
+            "Chrome subprocess launched (pid=%d, port=%d, headless=%s)",
+            self._chrome_process.pid, port, self._headless,
+        )
+
+        # 4. Wait for CDP to be ready
+        await self._wait_for_cdp_ready(port)
+
+        # 5. Connect Playwright via CDP
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self._headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-extensions",
-                "--disable-dev-shm-usage",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ],
-        )
+        cdp_url = f"http://127.0.0.1:{port}"
+        self._browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
+        logger.info("Playwright connected via CDP to %s", cdp_url)
+
+        # 6. Get or create context and page
+        contexts = self._browser.contexts
+        if contexts:
+            self._context = contexts[0]
+        else:
+            self._context = await self._browser.new_context()
+
         ua = random.choice(_USER_AGENTS)
-        self._context = await self._browser.new_context(
-            user_agent=ua,
-            viewport={"width": 1280, "height": 720},
-        )
+        # Apply stealth patches
         stealth = Stealth()
         await stealth.apply_stealth_async(self._context)
-        self._page = await self._context.new_page()
-        logger.info("Browser launched (headless=%s, ua=%s, stealth=on)", self._headless, ua[:50])
+
+        pages = self._context.pages
+        if pages:
+            self._page = pages[0]
+        else:
+            self._page = await self._context.new_page()
+
+        self._playwright_started = True
+        logger.info(
+            "Playwright fallback ready via CDP (headless=%s, ua=%s, stealth=on)",
+            self._headless, ua[:50],
+        )
 
     async def stop(self) -> None:
-        """Close the page, context, browser and playwright."""
-        if self._context:
-            await self._context.close()
-            self._context = None
-            self._page = None
-        if self._browser:
-            await self._browser.close()
-            self._browser = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
-        logger.info("Browser closed")
+        """Close curl_cffi session, Playwright, Chrome subprocess, and temp dir."""
+        if self._curl_session:
+            await self._curl_session.close()
+            self._curl_session = None
+            logger.info("curl_cffi session closed")
+
+        if self._playwright_started:
+            if self._context:
+                try:
+                    await self._context.close()
+                except Exception:
+                    pass
+                self._context = None
+                self._page = None
+            if self._browser:
+                try:
+                    await self._browser.close()
+                except Exception:
+                    pass
+                self._browser = None
+            if self._playwright:
+                await self._playwright.stop()
+                self._playwright = None
+            self._playwright_started = False
+            logger.info("Playwright browser closed")
+
+        # Terminate Chrome subprocess
+        if self._chrome_process is not None:
+            try:
+                self._chrome_process.terminate()
+                self._chrome_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._chrome_process.kill()
+                self._chrome_process.wait(timeout=5)
+            except OSError:
+                pass
+            logger.info("Chrome subprocess terminated (pid=%d)", self._chrome_process.pid)
+            self._chrome_process = None
+
+        # Clean up temp profile dir
+        if self._temp_profile_dir:
+            try:
+                shutil.rmtree(self._temp_profile_dir, ignore_errors=True)
+                logger.info("Cleaned up temp profile dir: %s", self._temp_profile_dir)
+            except Exception as exc:
+                logger.warning("Failed to clean temp profile dir: %s", exc)
+            self._temp_profile_dir = None
 
     async def scrape_service(
         self, service: str, retries: int = 2
     ) -> ScrapeResult:
-        """Scrape the report count for a single service with retry logic."""
+        """Scrape the report count for a single service with retry logic.
+
+        Two-tier approach per attempt:
+        1. Try curl_cffi (fast, lightweight)
+        2. If blocked by Cloudflare, fall back to Playwright
+        """
         url = f"{BASE_URL}/{service.lower()}"
         last_error = None
 
         for attempt in range(1, retries + 1):
+            # Tier 1: curl_cffi
             try:
-                result = await self._do_scrape(service, url)
+                result = await self._do_scrape_curl(service, url)
                 logger.info(
-                    "Scraped %s: %d reports (status=%s)",
+                    "Scraped %s via curl_cffi: %d reports (status=%s)",
                     service,
                     result.report_count,
                     result.status,
                 )
                 return result
+            except CurlBlockedError as exc:
+                logger.info(
+                    "curl_cffi blocked for %s (%s), falling back to Playwright",
+                    service,
+                    exc.reason,
+                )
+                # Tier 2: Playwright fallback
+                try:
+                    await self._ensure_playwright()
+                    result = await self._do_scrape_playwright(service, url)
+                    logger.info(
+                        "Scraped %s via Playwright: %d reports (status=%s)",
+                        service,
+                        result.report_count,
+                        result.status,
+                    )
+                    return result
+                except Exception as pw_exc:
+                    last_error = f"Playwright fallback failed: {pw_exc}"
+                    logger.warning(
+                        "Scrape attempt %d/%d for %s failed (Playwright): %s",
+                        attempt,
+                        retries,
+                        service,
+                        last_error,
+                    )
             except Exception as exc:
                 last_error = str(exc)
                 logger.warning(
-                    "Scrape attempt %d/%d for %s failed: %s",
+                    "Scrape attempt %d/%d for %s failed (curl): %s",
                     attempt,
                     retries,
                     service,
                     last_error,
                 )
-                if attempt < retries:
-                    await asyncio.sleep(3 * attempt)
+
+            if attempt < retries:
+                await asyncio.sleep(3 * attempt)
 
         return ScrapeResult(
             service=service,
@@ -130,12 +356,99 @@ class DownDetectorScraper:
             timestamp=datetime.now(timezone.utc).isoformat(),
             status="error",
             error=last_error,
+            source="error",
         )
 
-    async def _do_scrape(self, service: str, url: str) -> ScrapeResult:
-        """Perform the actual page scrape using the persistent page."""
+    async def _do_scrape_curl(self, service: str, url: str) -> ScrapeResult:
+        """Scrape using curl_cffi HTTP request."""
+        if not self._curl_session:
+            raise RuntimeError("curl_cffi session not started. Call start() first.")
+
+        response = await self._curl_session.get(url, timeout=30)
+
+        if response.status_code != 200:
+            raise CurlBlockedError(response.status_code, f"HTTP {response.status_code}")
+
+        html = response.text
+
+        # Check for Cloudflare challenge markers
+        html_lower = html.lower()
+        for marker in _CF_CHALLENGE_MARKERS:
+            if marker in html_lower:
+                if self._debug_dump:
+                    self._dump_html(service, html, suffix="_curl_blocked")
+                raise CurlBlockedError(200, f"Cloudflare challenge detected: '{marker}'")
+
+        if self._debug_dump:
+            self._dump_html(service, html, suffix="_curl")
+
+        # Strategy 2: Parse JS properties from HTML (regex)
+        result = self._parse_properties_from_html(html)
+        if result is not None:
+            report_count, page_status = result
+            status = page_status or self._classify_status(report_count)
+            return ScrapeResult(
+                service=service,
+                report_count=report_count,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                status=status,
+                source="curl",
+            )
+
+        # Strategy 3: Text-based fallback (strip HTML tags)
+        body_text = re.sub(r"<[^>]+>", " ", html)
+
+        if "no current problems" in body_text.lower():
+            return ScrapeResult(
+                service=service,
+                report_count=0,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                status="ok",
+                source="curl",
+            )
+
+        count = self._parse_report_text(body_text)
+        if count is not None:
+            return ScrapeResult(
+                service=service,
+                report_count=count,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                status=self._classify_status(count),
+                source="curl",
+            )
+
+        logger.warning("curl_cffi: could not extract report count for %s, defaulting to 0", service)
+        return ScrapeResult(
+            service=service,
+            report_count=0,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            status="ok",
+            source="curl",
+        )
+
+    async def _dismiss_consent_popup(self) -> None:
+        """Dismiss cookie consent popups if present."""
+        consent_selectors = [
+            'button:has-text("Consent")',
+            'button:has-text("Accept")',
+            'button:has-text("I agree")',
+            '.fc-cta-consent',
+        ]
+        for sel in consent_selectors:
+            try:
+                btn = self._page.locator(sel).first
+                if await btn.is_visible(timeout=2000):
+                    await btn.click()
+                    logger.info("Dismissed consent popup via: %s", sel)
+                    await self._page.wait_for_timeout(1000)
+                    return
+            except Exception:
+                continue
+
+    async def _do_scrape_playwright(self, service: str, url: str) -> ScrapeResult:
+        """Perform the actual page scrape using Playwright (fallback)."""
         if not self._page:
-            raise RuntimeError("Browser not started. Call start() first.")
+            raise RuntimeError("Playwright not started.")
 
         await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
         wait_ms = random.randint(2000, 5000)
@@ -145,14 +458,26 @@ class DownDetectorScraper:
         if await self._is_cloudflare_challenge():
             logger.info("Cloudflare challenge detected for %s, waiting for auto-resolve...", service)
             resolved = False
-            for _ in range(15):
+            for _ in range(5):
                 await self._page.wait_for_timeout(1000)
                 if not await self._is_cloudflare_challenge():
-                    logger.info("Cloudflare challenge resolved for %s", service)
+                    logger.info("Cloudflare challenge auto-resolved for %s", service)
                     resolved = True
                     break
             if not resolved:
-                logger.warning("Cloudflare challenge did not resolve for %s after 15s", service)
+                logger.info("Attempting to click Cloudflare Turnstile checkbox for %s", service)
+                if await self._click_cloudflare_checkbox():
+                    for _ in range(15):
+                        await self._page.wait_for_timeout(1000)
+                        if not await self._is_cloudflare_challenge():
+                            logger.info("Cloudflare challenge resolved after click for %s", service)
+                            resolved = True
+                            break
+            if not resolved:
+                logger.warning("Cloudflare challenge did not resolve for %s", service)
+
+        # Dismiss cookie consent popups before data extraction
+        await self._dismiss_consent_popup()
 
         if self._debug_dump:
             await self._dump_page(service)
@@ -165,6 +490,7 @@ class DownDetectorScraper:
             report_count=report_count,
             timestamp=datetime.now(timezone.utc).isoformat(),
             status=status,
+            source="playwright",
         )
 
     async def _is_cloudflare_challenge(self) -> bool:
@@ -179,6 +505,70 @@ class DownDetectorScraper:
         except Exception:
             pass
         return False
+
+    async def _click_cloudflare_checkbox(self) -> bool:
+        """Attempt to click the Cloudflare Turnstile checkbox."""
+        await self._page.wait_for_timeout(2000)
+
+        # Strategy 1: Find the widget container and click at checkbox coords
+        try:
+            box = await self._page.evaluate("""() => {
+                const input = document.querySelector('[name="cf-turnstile-response"]');
+                if (!input) return null;
+                let container = input.closest('div[style*="grid"]');
+                if (!container) container = input.parentElement?.parentElement?.parentElement;
+                if (!container) return null;
+                const rect = container.getBoundingClientRect();
+                return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+            }""")
+            if box and box["width"] > 0 and box["height"] > 0:
+                click_x = box["x"] + 30
+                click_y = box["y"] + box["height"] / 2
+                await self._page.mouse.move(click_x + 100, click_y + 50)
+                await self._page.wait_for_timeout(random.randint(200, 500))
+                await self._page.mouse.move(click_x, click_y)
+                await self._page.wait_for_timeout(random.randint(100, 300))
+                await self._page.mouse.click(click_x, click_y)
+                logger.info(
+                    "Clicked Turnstile widget at (%.0f, %.0f) container=%.0fx%.0f",
+                    click_x, click_y, box["width"], box["height"],
+                )
+                return True
+        except Exception as exc:
+            logger.debug("Strategy 1 (container coords) failed: %s", exc)
+
+        # Strategy 2: Find and click inside the Turnstile frame directly
+        cf_frame = None
+        for frame in self._page.frames:
+            if "challenges.cloudflare.com" in frame.url:
+                cf_frame = frame
+                break
+
+        if cf_frame:
+            logger.info("Found Turnstile frame: %s", cf_frame.url[:80])
+            for selector in ["input[type='checkbox']", ".ctp-checkbox-label", "body"]:
+                try:
+                    await cf_frame.locator(selector).first.click(timeout=3000)
+                    logger.info("Clicked inside Turnstile frame via '%s'", selector)
+                    return True
+                except Exception:
+                    continue
+
+        logger.debug(
+            "Could not click Turnstile checkbox (frames=%s)",
+            [f.url[:60] for f in self._page.frames],
+        )
+        return False
+
+    def _dump_html(self, service: str, html: str, suffix: str = "") -> None:
+        """Save HTML content for debugging."""
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        path = DATA_DIR / f"debug_{service}{suffix}.html"
+        try:
+            path.write_text(html, encoding="utf-8")
+            logger.info("Debug dump: saved %s (%d bytes)", path, len(html))
+        except Exception as exc:
+            logger.warning("Debug dump HTML failed: %s", exc)
 
     async def _dump_page(self, service: str) -> None:
         """Save page artifacts for debugging extraction failures."""
@@ -216,13 +606,12 @@ class DownDetectorScraper:
         except Exception as exc:
             logger.warning("Debug dump window.DD failed: %s", exc)
 
-    async def _extract_from_page(self, page: Page) -> tuple[int, Optional[str]]:
+    async def _extract_from_page(self, page) -> tuple[int, Optional[str]]:
         """Extract report count and status from the page.
 
         Returns (report_count, status_string_or_None).
         """
         # Strategy 1: Extract from window.DD.currentServiceProperties JS object
-        # This is the most reliable source — embedded chart data with status.
         try:
             props = await page.evaluate(
                 "() => window.DD && window.DD.currentServiceProperties"
@@ -241,7 +630,6 @@ class DownDetectorScraper:
         # Strategy 3: Text-based fallback
         body_text = await page.inner_text("body")
 
-        # Check for explicit "no current problems" message
         if "no current problems" in body_text.lower():
             return 0, "ok"
 
@@ -255,7 +643,6 @@ class DownDetectorScraper:
     @staticmethod
     def _parse_service_properties(props: dict) -> tuple[int, Optional[str]]:
         """Parse the window.DD.currentServiceProperties object."""
-        # Map DD status strings to our status values
         status_map = {
             "success": "ok",
             "warning": "warning",
@@ -263,12 +650,10 @@ class DownDetectorScraper:
         }
         page_status = status_map.get(props.get("status", ""), None)
 
-        # Get the most recent report count from the series data
         report_count = 0
         try:
             data_points = props["series"]["reports"]["data"]
             if data_points:
-                # Last entry is the most recent 15-min interval
                 report_count = int(data_points[-1].get("y", 0))
         except (KeyError, TypeError, IndexError):
             pass
@@ -278,7 +663,6 @@ class DownDetectorScraper:
     @staticmethod
     def _parse_properties_from_html(html: str) -> Optional[tuple[int, Optional[str]]]:
         """Regex fallback: extract currentServiceProperties from raw HTML."""
-        # Extract status
         status_match = re.search(
             r"currentServiceProperties\s*=\s*\{[^}]*status:\s*'(\w+)'",
             html,
@@ -288,7 +672,6 @@ class DownDetectorScraper:
             status_match.group(1), None
         ) if status_match else None
 
-        # Extract the last y value from series data
         y_values = re.findall(
             r"\{\s*x:\s*'[^']+',\s*y:\s*(\d+)\s*\}",
             html,
@@ -297,7 +680,6 @@ class DownDetectorScraper:
             report_count = int(y_values[-1])
             return report_count, page_status
 
-        # If we found status but no series data, still use it
         if page_status == "ok":
             return 0, page_status
 

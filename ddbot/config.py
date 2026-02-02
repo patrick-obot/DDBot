@@ -35,6 +35,7 @@ class Config:
     openclaw_gateway_url: str = "http://127.0.0.1:18789"
     openclaw_gateway_token: str = ""
     whatsapp_recipients: List[str] = field(default_factory=list)
+    chrome_path: str = ""
     log_level: str = "INFO"
 
     @staticmethod
@@ -88,6 +89,7 @@ class Config:
             ),
             openclaw_gateway_token=os.getenv("OPENCLAW_GATEWAY_TOKEN", ""),
             whatsapp_recipients=recipients,
+            chrome_path=os.getenv("DD_CHROME_PATH", ""),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
 

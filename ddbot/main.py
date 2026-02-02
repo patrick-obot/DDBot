@@ -103,7 +103,7 @@ async def poll_once(
 
 async def run_loop(config: Config, debug_dump: bool = False) -> None:
     """Main polling loop."""
-    scraper = DownDetectorScraper(debug_dump=debug_dump)
+    scraper = DownDetectorScraper(debug_dump=debug_dump, chrome_path=config.chrome_path)
     notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
     history = AlertHistory()
     consecutive_all_fail = 0
@@ -183,7 +183,7 @@ async def run_loop(config: Config, debug_dump: bool = False) -> None:
 
 async def run_once(config: Config, services: list[str] | None = None, debug_dump: bool = False) -> None:
     """Single check mode (--once)."""
-    scraper = DownDetectorScraper(debug_dump=debug_dump)
+    scraper = DownDetectorScraper(debug_dump=debug_dump, chrome_path=config.chrome_path)
     notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
     history = AlertHistory()
 
