@@ -7,10 +7,8 @@ import os
 import platform
 import random
 import re
-import shutil
 import socket
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,7 +76,7 @@ class DownDetectorScraper:
     encounters a Cloudflare challenge that requires a real browser.
     """
 
-    def __init__(self, headless: bool = True, debug_dump: bool = False, chrome_path: str = ""):
+    def __init__(self, headless: bool = False, debug_dump: bool = False, chrome_path: str = ""):
         self._headless = headless
         self._debug_dump = debug_dump
         self._chrome_path = chrome_path
@@ -93,7 +91,7 @@ class DownDetectorScraper:
         self._playwright_started = False
         # Chrome subprocess for CDP connection
         self._chrome_process: Optional[subprocess.Popen] = None
-        self._temp_profile_dir: Optional[str] = None
+        self._profile_dir: Optional[str] = None
         self._cdp_port: Optional[int] = None
 
     async def start(self) -> None:
@@ -172,26 +170,24 @@ class DownDetectorScraper:
             return
 
         from playwright.async_api import async_playwright
-        from playwright_stealth import Stealth
 
         # 1. Find Chrome and a free port
         chrome_exe = self._find_chrome_executable(self._chrome_path)
         port = self._find_free_port()
         self._cdp_port = port
 
-        # 2. Create temp profile dir
-        self._temp_profile_dir = tempfile.mkdtemp(prefix="ddbot_chrome_")
+        # 2. Use persistent profile dir (cookies survive between runs)
+        profile_dir = DATA_DIR / "chrome_profile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        self._profile_dir = str(profile_dir)
 
-        # 3. Launch Chrome subprocess
+        # 3. Launch Chrome subprocess with minimal flags
+        #    Anti-detection flags like --disable-blink-features=AutomationControlled
+        #    are themselves detected by Cloudflare. Keep flags minimal.
         chrome_args = [
             chrome_exe,
             f"--remote-debugging-port={port}",
-            f"--user-data-dir={self._temp_profile_dir}",
-            "--disable-blink-features=AutomationControlled",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
+            f"--user-data-dir={self._profile_dir}",
         ]
         if self._headless:
             chrome_args.append("--headless=new")
@@ -222,11 +218,6 @@ class DownDetectorScraper:
         else:
             self._context = await self._browser.new_context()
 
-        ua = random.choice(_USER_AGENTS)
-        # Apply stealth patches
-        stealth = Stealth()
-        await stealth.apply_stealth_async(self._context)
-
         pages = self._context.pages
         if pages:
             self._page = pages[0]
@@ -235,8 +226,8 @@ class DownDetectorScraper:
 
         self._playwright_started = True
         logger.info(
-            "Playwright fallback ready via CDP (headless=%s, ua=%s, stealth=on)",
-            self._headless, ua[:50],
+            "Playwright fallback ready via CDP (headless=%s)",
+            self._headless,
         )
 
     async def stop(self) -> None:
@@ -279,14 +270,7 @@ class DownDetectorScraper:
             logger.info("Chrome subprocess terminated (pid=%d)", self._chrome_process.pid)
             self._chrome_process = None
 
-        # Clean up temp profile dir
-        if self._temp_profile_dir:
-            try:
-                shutil.rmtree(self._temp_profile_dir, ignore_errors=True)
-                logger.info("Cleaned up temp profile dir: %s", self._temp_profile_dir)
-            except Exception as exc:
-                logger.warning("Failed to clean temp profile dir: %s", exc)
-            self._temp_profile_dir = None
+        self._profile_dir = None
 
     async def scrape_service(
         self, service: str, retries: int = 2

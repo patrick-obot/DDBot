@@ -2,7 +2,6 @@
 
 import asyncio
 import socket
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -644,17 +643,14 @@ class TestStopCleansUpSubprocess:
         mock_proc.wait = MagicMock()
         mock_proc.kill = MagicMock()
         scraper._chrome_process = mock_proc
-
-        temp_dir = tempfile.mkdtemp(prefix="ddbot_test_")
-        scraper._temp_profile_dir = temp_dir
+        scraper._profile_dir = "/some/path"
 
         await scraper.stop()
 
         mock_proc.terminate.assert_called_once()
         mock_proc.wait.assert_called()
         assert scraper._chrome_process is None
-        assert scraper._temp_profile_dir is None
-        assert not Path(temp_dir).exists()
+        assert scraper._profile_dir is None
 
     @pytest.mark.asyncio
     async def test_subprocess_killed_on_timeout(self):
@@ -669,7 +665,7 @@ class TestStopCleansUpSubprocess:
         mock_proc.wait = MagicMock(side_effect=[sp.TimeoutExpired("chrome", 5), None])
         mock_proc.kill = MagicMock()
         scraper._chrome_process = mock_proc
-        scraper._temp_profile_dir = None
+        scraper._profile_dir = None
 
         await scraper.stop()
 
@@ -682,10 +678,28 @@ class TestStopCleansUpSubprocess:
         scraper = DownDetectorScraper()
         scraper._playwright_started = False
         scraper._chrome_process = None
-        scraper._temp_profile_dir = None
+        scraper._profile_dir = None
 
         # Should not raise
         await scraper.stop()
+
+    @pytest.mark.asyncio
+    async def test_profile_dir_persists_after_stop(self, tmp_path):
+        """Persistent profile dir should NOT be deleted on stop."""
+        scraper = DownDetectorScraper()
+        scraper._playwright_started = False
+        scraper._chrome_process = None
+
+        profile_dir = tmp_path / "chrome_profile"
+        profile_dir.mkdir()
+        (profile_dir / "Cookies").write_text("fake cookies")
+        scraper._profile_dir = str(profile_dir)
+
+        await scraper.stop()
+
+        # Profile dir and its contents should still exist
+        assert profile_dir.exists()
+        assert (profile_dir / "Cookies").exists()
 
 
 class TestWaitForCdpReady:
