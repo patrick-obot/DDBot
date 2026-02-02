@@ -73,7 +73,7 @@ pytest tests/
 
 ## Architecture
 
-- **scraper.py** - Playwright-based DownDetector scraper with fallback strategies
+- **scraper.py** - Playwright-based DownDetector scraper with stealth anti-detection and Cloudflare challenge bypass
 - **notifier.py** - WhatsApp message sending via OpenClaw gateway
 - **history.py** - JSON-based alert history with cooldown enforcement
 - **config.py** - Environment-based configuration with validation

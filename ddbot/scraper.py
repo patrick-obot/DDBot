@@ -7,9 +7,13 @@ import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright_stealth import Stealth
+
+from ddbot.config import DATA_DIR
 
 logger = logging.getLogger("ddbot.scraper")
 
@@ -45,8 +49,9 @@ class ScrapeResult:
 class DownDetectorScraper:
     """Scrapes DownDetector.co.za for service outage report counts."""
 
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, debug_dump: bool = False):
         self._headless = headless
+        self._debug_dump = debug_dump
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
@@ -60,6 +65,10 @@ class DownDetectorScraper:
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
+                "--disable-extensions",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
             ],
         )
         ua = random.choice(_USER_AGENTS)
@@ -67,8 +76,10 @@ class DownDetectorScraper:
             user_agent=ua,
             viewport={"width": 1280, "height": 720},
         )
+        stealth = Stealth()
+        await stealth.apply_stealth_async(self._context)
         self._page = await self._context.new_page()
-        logger.info("Browser launched (headless=%s, ua=%s)", self._headless, ua[:50])
+        logger.info("Browser launched (headless=%s, ua=%s, stealth=on)", self._headless, ua[:50])
 
     async def stop(self) -> None:
         """Close the page, context, browser and playwright."""
@@ -130,6 +141,22 @@ class DownDetectorScraper:
         wait_ms = random.randint(2000, 5000)
         await self._page.wait_for_timeout(wait_ms)
 
+        # Detect and wait through Cloudflare challenge pages
+        if await self._is_cloudflare_challenge():
+            logger.info("Cloudflare challenge detected for %s, waiting for auto-resolve...", service)
+            resolved = False
+            for _ in range(15):
+                await self._page.wait_for_timeout(1000)
+                if not await self._is_cloudflare_challenge():
+                    logger.info("Cloudflare challenge resolved for %s", service)
+                    resolved = True
+                    break
+            if not resolved:
+                logger.warning("Cloudflare challenge did not resolve for %s after 15s", service)
+
+        if self._debug_dump:
+            await self._dump_page(service)
+
         report_count, page_status = await self._extract_from_page(self._page)
         status = page_status or self._classify_status(report_count)
 
@@ -139,6 +166,55 @@ class DownDetectorScraper:
             timestamp=datetime.now(timezone.utc).isoformat(),
             status=status,
         )
+
+    async def _is_cloudflare_challenge(self) -> bool:
+        """Check if the current page is a Cloudflare challenge/interstitial."""
+        try:
+            title = await self._page.title()
+            if "just a moment" in title.lower():
+                return True
+            body_text = await self._page.inner_text("body")
+            if "verify you are human" in body_text.lower():
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def _dump_page(self, service: str) -> None:
+        """Save page artifacts for debugging extraction failures."""
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        prefix = DATA_DIR / f"debug_{service}"
+
+        try:
+            html = await self._page.content()
+            Path(f"{prefix}.html").write_text(html, encoding="utf-8")
+            logger.info("Debug dump: saved %s.html (%d bytes)", prefix, len(html))
+        except Exception as exc:
+            logger.warning("Debug dump HTML failed: %s", exc)
+
+        try:
+            await self._page.screenshot(path=f"{prefix}.png", full_page=True)
+            logger.info("Debug dump: saved %s.png", prefix)
+        except Exception as exc:
+            logger.warning("Debug dump screenshot failed: %s", exc)
+
+        try:
+            body_text = await self._page.inner_text("body")
+            Path(f"{prefix}.txt").write_text(body_text, encoding="utf-8")
+            logger.info("Debug dump: saved %s.txt (%d chars)", prefix, len(body_text))
+        except Exception as exc:
+            logger.warning("Debug dump body text failed: %s", exc)
+
+        try:
+            dd_obj = await self._page.evaluate(
+                "() => { try { return JSON.parse(JSON.stringify(window.DD)); } catch(e) { return {error: e.toString()}; } }"
+            )
+            Path(f"{prefix}_dd.json").write_text(
+                json.dumps(dd_obj, indent=2, default=str), encoding="utf-8"
+            )
+            logger.info("Debug dump: saved %s_dd.json", prefix)
+        except Exception as exc:
+            logger.warning("Debug dump window.DD failed: %s", exc)
 
     async def _extract_from_page(self, page: Page) -> tuple[int, Optional[str]]:
         """Extract report count and status from the page.

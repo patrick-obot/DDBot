@@ -40,10 +40,12 @@ DDBot/
 ## Key Components
 
 ### 1. Scraper (`scraper.py`)
-- Uses **Playwright** (headless Chromium) to load DownDetector pages
-- Handles Cloudflare protection and JS-rendered content
+- Uses **Playwright** (headless Chromium) with **playwright-stealth** to load DownDetector pages
+- Stealth patches: navigator.webdriver, chrome runtime, permissions, plugins, languages
+- Cloudflare Turnstile bypass: detects challenge pages and waits up to 15s for auto-resolve
+- Extra browser args to reduce detection surface (`--disable-extensions`, `--disable-dev-shm-usage`, etc.)
 - Targets: `https://downdetector.co.za/status/<service>`
-- Extracts current report count from the page
+- 3 extraction strategies: JS object (`window.DD`) → regex HTML parsing → text-based fallback
 - Configurable list of services to monitor (default: MTN)
 - Returns structured data: `{ service, report_count, timestamp, status }`
 
@@ -101,13 +103,10 @@ DDBot/
 
 ## Dependencies (`requirements.txt`)
 ```
-playwright>=1.40.0
-python-dotenv>=1.0.0
-whatsapp-api-client-python>=0.0.40
-aiohttp>=3.9.0
-colorlog>=6.7.0
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
+playwright==1.57.0
+playwright-stealth==2.0.1
+python-dotenv==1.2.1
+requests==2.31.0
 ```
 
 ---

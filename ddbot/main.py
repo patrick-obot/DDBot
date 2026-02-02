@@ -101,9 +101,9 @@ async def poll_once(
     return any_success
 
 
-async def run_loop(config: Config) -> None:
+async def run_loop(config: Config, debug_dump: bool = False) -> None:
     """Main polling loop."""
-    scraper = DownDetectorScraper()
+    scraper = DownDetectorScraper(debug_dump=debug_dump)
     notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
     history = AlertHistory()
     consecutive_all_fail = 0
@@ -181,9 +181,9 @@ async def run_loop(config: Config) -> None:
         await scraper.stop()
 
 
-async def run_once(config: Config, services: list[str] | None = None) -> None:
+async def run_once(config: Config, services: list[str] | None = None, debug_dump: bool = False) -> None:
     """Single check mode (--once)."""
-    scraper = DownDetectorScraper()
+    scraper = DownDetectorScraper(debug_dump=debug_dump)
     notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
     history = AlertHistory()
 
@@ -218,6 +218,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Scrape only, skip sending WhatsApp messages",
+    )
+    parser.add_argument(
+        "--debug-dump",
+        action="store_true",
+        help="Save page HTML, screenshot, text, and JS data to data/debug_*.* for diagnosis",
     )
     return parser.parse_args(argv)
 
@@ -258,9 +263,9 @@ def main(argv: list[str] | None = None) -> None:
 
         if args.once:
             logger.info("Running single check mode")
-            loop.run_until_complete(run_once(config, services=services))
+            loop.run_until_complete(run_once(config, services=services, debug_dump=args.debug_dump))
         else:
-            loop.run_until_complete(run_loop(config))
+            loop.run_until_complete(run_loop(config, debug_dump=args.debug_dump))
 
         loop.close()
     except SystemExit:

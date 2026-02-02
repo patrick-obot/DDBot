@@ -4,7 +4,7 @@
 DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage reports and sends WhatsApp alerts via OpenClaw gateway when report counts exceed a threshold.
 
 ## Architecture
-- **ddbot/scraper.py** — Playwright-based scraper with 3 fallback strategies: JS object extraction → regex HTML parsing → text-based fallback. Anti-detection: rotates user-agents from a pool of 6, reuses a persistent browser context/page across services, randomizes page wait times (2-5s)
+- **ddbot/scraper.py** — Playwright-based scraper with 3 fallback strategies: JS object extraction → regex HTML parsing → text-based fallback. Anti-detection: `playwright-stealth` patches (navigator.webdriver, chrome runtime, permissions, plugins, languages), rotates user-agents from a pool of 6, reuses a persistent browser context/page across services, randomizes page wait times (2-5s). Cloudflare challenge detection with up to 15s auto-resolve wait
 - **ddbot/notifier.py** — WhatsApp messaging via OpenClaw `/hooks/agent` endpoint. Supports phone numbers and group JIDs (`@g.us`)
 - **ddbot/history.py** — JSON-based alert history persistence with cooldown logic. Atomic file writes (temp + `os.replace`). Corrupt files backed up to `.bak`
 - **ddbot/config.py** — Environment variable config with validation, logging setup. Safe int parsing with fallback defaults. Service name validation (`^[a-z0-9-]+$`)
@@ -15,7 +15,7 @@ DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage r
 - Switched from GREEN-API to OpenClaw gateway (commit f0677ad)
 - Using OpenClaw `/hooks/agent` endpoint with Bearer token auth, expects HTTP 202 (commit db6730d)
 - Message format wraps content in "Reply with exactly this text..." instruction for OpenClaw agent
-- Scraper uses Playwright headless with user-agent spoofing to avoid Cloudflare blocks
+- Scraper uses Playwright headless with `playwright-stealth` and user-agent spoofing to bypass Cloudflare Turnstile. Detects challenge pages ("Just a moment" / "Verify you are human") and waits up to 15s for auto-resolve
 - Alert cooldown default: 30 min per service. Polling interval default: 30 min. Threshold default: 10 reports.
 - Active hours: only polls between 07:00-20:00 SAST by default to reduce bot-detection risk. `--once` bypasses active hours.
 - Runtime deps pinned to exact versions in `requirements.txt`; dev/test deps split to `requirements-dev.txt`
