@@ -46,7 +46,7 @@ def format_recipient_for_openclaw(recipient: str) -> str:
 
 
 class WhatsAppNotifier:
-    """Sends WhatsApp messages via OpenClaw's /hooks/agent endpoint."""
+    """Sends WhatsApp messages via OpenClaw's /tools/invoke endpoint."""
 
     def __init__(self, gateway_url: str, gateway_token: str):
         self._gateway_url = gateway_url.rstrip("/")
@@ -55,7 +55,7 @@ class WhatsAppNotifier:
     def send_message(self, recipient: str, message: str) -> bool:
         """Send a WhatsApp message to a phone number or group. Returns True on success."""
         to = format_recipient_for_openclaw(recipient)
-        endpoint = f"{self._gateway_url}/hooks/agent"
+        endpoint = f"{self._gateway_url}/tools/invoke"
         try:
             resp = requests.post(
                 endpoint,
@@ -64,14 +64,16 @@ class WhatsAppNotifier:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "message": f"Reply with exactly this text and nothing else:\n\n{message}",
-                    "deliver": True,
-                    "channel": "whatsapp",
-                    "to": to,
+                    "tool": "message",
+                    "action": "send",
+                    "args": {
+                        "target": to,
+                        "message": message,
+                    },
                 },
                 timeout=30,
             )
-            if resp.status_code == 202:
+            if resp.status_code == 200 and resp.json().get("ok"):
                 logger.info("Message sent to %s via OpenClaw", to)
                 return True
             else:
