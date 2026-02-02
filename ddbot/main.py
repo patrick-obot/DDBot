@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import random
 import signal
 import sys
 from datetime import datetime
@@ -40,52 +41,64 @@ async def poll_once(
     history: AlertHistory,
     config: Config,
     services: list[str] | None = None,
-) -> None:
-    """Run a single polling cycle across all (or specified) services."""
-    targets = services or config.services
+) -> bool:
+    """Run a single polling cycle across all (or specified) services.
 
-    for service in targets:
+    Returns True if at least one service was scraped successfully.
+    """
+    targets = services or config.services
+    any_success = False
+
+    for i, service in enumerate(targets):
         result = await scraper.scrape_service(service)
 
         if result.error:
             logger.warning("Scrape error for %s: %s", service, result.error)
-            continue
+        else:
+            any_success = True
+            logger.info(
+                "%s: %d reports (status=%s)",
+                service.upper(),
+                result.report_count,
+                result.status,
+            )
 
-        logger.info(
-            "%s: %d reports (status=%s)",
-            service.upper(),
-            result.report_count,
-            result.status,
-        )
-
-        if result.report_count >= config.threshold:
-            if history.is_in_cooldown(service, config.alert_cooldown):
-                logger.info(
-                    "%s: threshold exceeded (%d >= %d) but in cooldown, skipping alert",
+            if result.report_count >= config.threshold:
+                if history.is_in_cooldown(service, config.alert_cooldown):
+                    logger.info(
+                        "%s: threshold exceeded (%d >= %d) but in cooldown, skipping alert",
+                        service.upper(),
+                        result.report_count,
+                        config.threshold,
+                    )
+                else:
+                    sent_to = notifier.send_alert(
+                        recipients=config.whatsapp_recipients,
+                        service=service,
+                        report_count=result.report_count,
+                        threshold=config.threshold,
+                    )
+                    if sent_to:
+                        history.record_alert(
+                            service=service,
+                            report_count=result.report_count,
+                            recipients=sent_to,
+                        )
+            else:
+                logger.debug(
+                    "%s: below threshold (%d < %d)",
                     service.upper(),
                     result.report_count,
                     config.threshold,
                 )
-            else:
-                sent_to = notifier.send_alert(
-                    recipients=config.whatsapp_recipients,
-                    service=service,
-                    report_count=result.report_count,
-                    threshold=config.threshold,
-                )
-                if sent_to:
-                    history.record_alert(
-                        service=service,
-                        report_count=result.report_count,
-                        recipients=sent_to,
-                    )
-        else:
-            logger.debug(
-                "%s: below threshold (%d < %d)",
-                service.upper(),
-                result.report_count,
-                config.threshold,
-            )
+
+        # Random delay between services (skip after the last one)
+        if i < len(targets) - 1:
+            delay = random.uniform(config.scrape_delay_min, config.scrape_delay_max)
+            logger.debug("Waiting %.1fs before next service", delay)
+            await asyncio.sleep(delay)
+
+    return any_success
 
 
 async def run_loop(config: Config) -> None:
@@ -93,7 +106,8 @@ async def run_loop(config: Config) -> None:
     scraper = DownDetectorScraper()
     notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
     history = AlertHistory()
-    consecutive_failures = 0
+    consecutive_all_fail = 0
+    max_backoff = 3600  # 1 hour cap
 
     await scraper.start()
     try:
@@ -106,6 +120,8 @@ async def run_loop(config: Config) -> None:
         )
 
         while not _shutdown.is_set():
+            wait_time = config.poll_interval
+
             if not is_within_active_hours(config):
                 logger.debug(
                     "Outside active hours (%02d:00-%02d:00 %s), skipping poll",
@@ -115,32 +131,49 @@ async def run_loop(config: Config) -> None:
                 )
             else:
                 try:
-                    await poll_once(scraper, notifier, history, config)
-                    if consecutive_failures > 0:
-                        logger.info(
-                            "Poll succeeded after %d consecutive failure(s)",
-                            consecutive_failures,
+                    any_success = await poll_once(scraper, notifier, history, config)
+                    if any_success:
+                        if consecutive_all_fail > 0:
+                            logger.info(
+                                "Poll succeeded after %d consecutive all-fail cycle(s)",
+                                consecutive_all_fail,
+                            )
+                        consecutive_all_fail = 0
+                        # Touch heartbeat for Docker HEALTHCHECK
+                        try:
+                            HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+                            HEARTBEAT_FILE.touch()
+                        except OSError:
+                            pass
+                    else:
+                        consecutive_all_fail += 1
+                        wait_time = min(
+                            config.poll_interval * (2 ** consecutive_all_fail),
+                            max_backoff,
                         )
-                    consecutive_failures = 0
-                    # Touch heartbeat for Docker HEALTHCHECK
-                    try:
-                        HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
-                        HEARTBEAT_FILE.touch()
-                    except OSError:
-                        pass
+                        logger.warning(
+                            "All services failed (streak: %d), backing off to %ds",
+                            consecutive_all_fail,
+                            wait_time,
+                        )
                 except Exception as exc:
-                    consecutive_failures += 1
+                    consecutive_all_fail += 1
+                    wait_time = min(
+                        config.poll_interval * (2 ** consecutive_all_fail),
+                        max_backoff,
+                    )
                     logger.error(
-                        "Poll failed (consecutive failures: %d): %s",
-                        consecutive_failures,
+                        "Poll crashed (all-fail streak: %d, backoff: %ds): %s",
+                        consecutive_all_fail,
+                        wait_time,
                         exc,
                         exc_info=True,
                     )
 
-            # Wait for poll_interval or until shutdown signal
+            # Wait for the computed interval or until shutdown signal
             try:
                 await asyncio.wait_for(
-                    _shutdown.wait(), timeout=config.poll_interval
+                    _shutdown.wait(), timeout=wait_time
                 )
             except asyncio.TimeoutError:
                 pass  # Normal timeout, continue polling

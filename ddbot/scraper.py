@@ -3,16 +3,32 @@
 import asyncio
 import json
 import logging
+import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from playwright.async_api import async_playwright, Browser, Page
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 logger = logging.getLogger("ddbot.scraper")
 
 BASE_URL = "https://downdetector.co.za/status"
+
+_USER_AGENTS = [
+    # Chrome 122 – Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    # Chrome 122 – macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    # Edge 122 – Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+    # Firefox 123 – Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    # Firefox 123 – macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0",
+    # Chrome 122 – Linux
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+]
 
 
 @dataclass
@@ -33,9 +49,11 @@ class DownDetectorScraper:
         self._headless = headless
         self._playwright = None
         self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+        self._page: Optional[Page] = None
 
     async def start(self) -> None:
-        """Launch the browser instance."""
+        """Launch the browser and create a persistent context with a random user-agent."""
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=self._headless,
@@ -44,10 +62,20 @@ class DownDetectorScraper:
                 "--no-sandbox",
             ],
         )
-        logger.info("Browser launched (headless=%s)", self._headless)
+        ua = random.choice(_USER_AGENTS)
+        self._context = await self._browser.new_context(
+            user_agent=ua,
+            viewport={"width": 1280, "height": 720},
+        )
+        self._page = await self._context.new_page()
+        logger.info("Browser launched (headless=%s, ua=%s)", self._headless, ua[:50])
 
     async def stop(self) -> None:
-        """Close the browser and playwright."""
+        """Close the page, context, browser and playwright."""
+        if self._context:
+            await self._context.close()
+            self._context = None
+            self._page = None
         if self._browser:
             await self._browser.close()
             self._browser = None
@@ -94,35 +122,23 @@ class DownDetectorScraper:
         )
 
     async def _do_scrape(self, service: str, url: str) -> ScrapeResult:
-        """Perform the actual page scrape."""
-        if not self._browser:
+        """Perform the actual page scrape using the persistent page."""
+        if not self._page:
             raise RuntimeError("Browser not started. Call start() first.")
 
-        context = await self._browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 720},
+        await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        wait_ms = random.randint(2000, 5000)
+        await self._page.wait_for_timeout(wait_ms)
+
+        report_count, page_status = await self._extract_from_page(self._page)
+        status = page_status or self._classify_status(report_count)
+
+        return ScrapeResult(
+            service=service,
+            report_count=report_count,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            status=status,
         )
-        page: Page = await context.new_page()
-
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
-
-            report_count, page_status = await self._extract_from_page(page)
-            status = page_status or self._classify_status(report_count)
-
-            return ScrapeResult(
-                service=service,
-                report_count=report_count,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                status=status,
-            )
-        finally:
-            await context.close()
 
     async def _extract_from_page(self, page: Page) -> tuple[int, Optional[str]]:
         """Extract report count and status from the page.

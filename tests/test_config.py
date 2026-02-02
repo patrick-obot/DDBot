@@ -12,7 +12,8 @@ def _clean_env(monkeypatch):
     """Ensure environment is clean before each test."""
     env_vars = [
         "DD_SERVICES", "DD_THRESHOLD", "DD_POLL_INTERVAL",
-        "DD_ALERT_COOLDOWN", "OPENCLAW_GATEWAY_URL", "OPENCLAW_GATEWAY_TOKEN",
+        "DD_ALERT_COOLDOWN", "DD_SCRAPE_DELAY_MIN", "DD_SCRAPE_DELAY_MAX",
+        "OPENCLAW_GATEWAY_URL", "OPENCLAW_GATEWAY_TOKEN",
         "WHATSAPP_RECIPIENTS", "LOG_LEVEL",
     ]
     for var in env_vars:
@@ -223,3 +224,53 @@ class TestActiveHoursConfig:
         )
         errors = config.validate()
         assert any("ACTIVE_HOURS_START" in e for e in errors)
+
+
+class TestScrapeDelayConfig:
+    def test_default_delay_values(self):
+        config = Config()
+        assert config.scrape_delay_min == 5
+        assert config.scrape_delay_max == 15
+
+    def test_delay_from_env(self, monkeypatch):
+        monkeypatch.setenv("DD_SCRAPE_DELAY_MIN", "3")
+        monkeypatch.setenv("DD_SCRAPE_DELAY_MAX", "10")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.scrape_delay_min == 3
+        assert config.scrape_delay_max == 10
+
+    def test_non_numeric_delay_falls_back(self, monkeypatch):
+        monkeypatch.setenv("DD_SCRAPE_DELAY_MIN", "fast")
+        monkeypatch.setenv("DD_SCRAPE_DELAY_MAX", "slow")
+        config = Config.from_env(env_path="/dev/null")
+        assert config.scrape_delay_min == 5
+        assert config.scrape_delay_max == 15
+
+    def test_negative_delay_min_fails_validation(self):
+        config = Config(
+            scrape_delay_min=-1,
+            openclaw_gateway_token="t",
+            whatsapp_recipients=["27000"],
+        )
+        errors = config.validate()
+        assert any("DD_SCRAPE_DELAY_MIN" in e for e in errors)
+
+    def test_max_less_than_min_fails_validation(self):
+        config = Config(
+            scrape_delay_min=10,
+            scrape_delay_max=5,
+            openclaw_gateway_token="t",
+            whatsapp_recipients=["27000"],
+        )
+        errors = config.validate()
+        assert any("DD_SCRAPE_DELAY_MAX" in e for e in errors)
+
+    def test_equal_min_max_passes_validation(self):
+        config = Config(
+            scrape_delay_min=5,
+            scrape_delay_max=5,
+            openclaw_gateway_token="t",
+            whatsapp_recipients=["27000"],
+        )
+        errors = config.validate()
+        assert not any("DELAY" in e for e in errors)

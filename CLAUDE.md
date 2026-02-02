@@ -4,11 +4,11 @@
 DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage reports and sends WhatsApp alerts via OpenClaw gateway when report counts exceed a threshold.
 
 ## Architecture
-- **ddbot/scraper.py** — Playwright-based scraper with 3 fallback strategies: JS object extraction → regex HTML parsing → text-based fallback
+- **ddbot/scraper.py** — Playwright-based scraper with 3 fallback strategies: JS object extraction → regex HTML parsing → text-based fallback. Anti-detection: rotates user-agents from a pool of 6, reuses a persistent browser context/page across services, randomizes page wait times (2-5s)
 - **ddbot/notifier.py** — WhatsApp messaging via OpenClaw `/hooks/agent` endpoint. Supports phone numbers and group JIDs (`@g.us`)
 - **ddbot/history.py** — JSON-based alert history persistence with cooldown logic. Atomic file writes (temp + `os.replace`). Corrupt files backed up to `.bak`
 - **ddbot/config.py** — Environment variable config with validation, logging setup. Safe int parsing with fallback defaults. Service name validation (`^[a-z0-9-]+$`)
-- **ddbot/main.py** — Async polling loop with crash protection (consecutive failure tracking), CLI interface (`--once`, `--service`, `--dry-run`, `--env`), heartbeat file for Docker HEALTHCHECK
+- **ddbot/main.py** — Async polling loop with crash protection, exponential backoff on all-service-fail (doubles wait up to 1h cap), random inter-service delay, CLI interface (`--once`, `--service`, `--dry-run`, `--env`), heartbeat file for Docker HEALTHCHECK
 - **tests/** — Unit tests for all modules (pytest + pytest-asyncio). Dev deps in `requirements-dev.txt`
 
 ## Key Decisions
@@ -30,12 +30,14 @@ DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage r
 - `DD_ACTIVE_HOURS_START` — hour to start polling, 24h format (default: 7)
 - `DD_ACTIVE_HOURS_END` — hour to stop polling, 24h format (default: 20)
 - `DD_TIMEZONE` — timezone for active hours (default: Africa/Johannesburg)
+- `DD_SCRAPE_DELAY_MIN` — minimum seconds between service scrapes (default: 5)
+- `DD_SCRAPE_DELAY_MAX` — maximum seconds between service scrapes (default: 15)
 - `OPENCLAW_GATEWAY_URL` — OpenClaw endpoint (default: http://127.0.0.1:18789)
 - `OPENCLAW_GATEWAY_TOKEN` — Bearer token for auth
 - `WHATSAPP_RECIPIENTS` — comma-separated phone numbers or group JIDs
 
 ## Current State
-- All core features implemented and tested (83 tests)
+- All core features implemented and tested (101 tests)
 - OpenClaw integration complete
 - Docker deployment ready (hardened with non-root user, healthcheck)
 - Production hardened: safe config parsing, atomic history writes, poll loop crash protection

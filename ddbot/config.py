@@ -30,6 +30,8 @@ class Config:
     active_hours_start: int = 7
     active_hours_end: int = 20
     timezone: str = "Africa/Johannesburg"
+    scrape_delay_min: int = 5
+    scrape_delay_max: int = 15
     openclaw_gateway_url: str = "http://127.0.0.1:18789"
     openclaw_gateway_token: str = ""
     whatsapp_recipients: List[str] = field(default_factory=list)
@@ -79,6 +81,8 @@ class Config:
             active_hours_start=cls._safe_int("DD_ACTIVE_HOURS_START", 7),
             active_hours_end=cls._safe_int("DD_ACTIVE_HOURS_END", 20),
             timezone=os.getenv("DD_TIMEZONE", "Africa/Johannesburg"),
+            scrape_delay_min=cls._safe_int("DD_SCRAPE_DELAY_MIN", 5),
+            scrape_delay_max=cls._safe_int("DD_SCRAPE_DELAY_MAX", 15),
             openclaw_gateway_url=os.getenv(
                 "OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789"
             ),
@@ -104,6 +108,10 @@ class Config:
             errors.append("DD_ACTIVE_HOURS_END must be 0-23")
         if self.active_hours_start >= self.active_hours_end:
             errors.append("DD_ACTIVE_HOURS_START must be less than DD_ACTIVE_HOURS_END")
+        if self.scrape_delay_min < 0:
+            errors.append("DD_SCRAPE_DELAY_MIN must be >= 0")
+        if self.scrape_delay_max < self.scrape_delay_min:
+            errors.append("DD_SCRAPE_DELAY_MAX must be >= DD_SCRAPE_DELAY_MIN")
         if not self.openclaw_gateway_token:
             errors.append("OPENCLAW_GATEWAY_TOKEN is required")
         if not self.whatsapp_recipients:
