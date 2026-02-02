@@ -15,7 +15,7 @@ DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage r
 - Switched from GREEN-API to OpenClaw gateway (commit f0677ad)
 - Switched from OpenClaw `/hooks/agent` (required LLM processing via gpt-4o-mini) to `/tools/invoke` with the `message` tool for direct WhatsApp delivery. Bearer token auth, expects HTTP 200 with `{"ok": true}`
 - Scraper uses `curl_cffi` as primary engine (lightweight HTTP with Chrome TLS fingerprint) and falls back to Playwright only when Cloudflare challenges are detected. Playwright fallback uses connect-over-CDP with minimal Chrome flags and a persistent profile dir (`data/chrome_profile/`) to preserve `cf_clearance` cookies. Anti-detection flags and stealth patches are intentionally omitted — they trigger Cloudflare detection. First run after fresh profile requires manual Turnstile solve in headed mode; subsequent runs reuse the cookie. Headless mode does not work with Cloudflare (different fingerprint). Cookie consent popups auto-dismissed
-- Alert cooldown default: 30 min per service. Polling interval default: 30 min. Threshold default: 10 reports.
+- Alert cooldown default: 15 min per service. Polling interval default: 30 min. Threshold default: 10 reports.
 - Active hours: only polls between 07:00-20:00 SAST by default to reduce bot-detection risk. `--once` bypasses active hours.
 - Runtime deps pinned to exact versions in `requirements.txt`; dev/test deps split to `requirements-dev.txt`
 - Dockerfile runs as non-root `ddbot` user with `STOPSIGNAL SIGTERM` and heartbeat-based `HEALTHCHECK`
@@ -25,7 +25,7 @@ DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage r
 - `DD_SERVICES` — comma-separated service slugs (default: mtn)
 - `DD_THRESHOLD` — report count to trigger alert (default: 10)
 - `DD_POLL_INTERVAL` — seconds between polls (default: 1800 / 30 min)
-- `DD_ALERT_COOLDOWN` — seconds between alerts per service (default: 1800)
+- `DD_ALERT_COOLDOWN` — seconds between alerts per service (default: 900 / 15 min)
 - `DD_ACTIVE_HOURS_START` — hour to start polling, 24h format (default: 7)
 - `DD_ACTIVE_HOURS_END` — hour to stop polling, 24h format (default: 20)
 - `DD_TIMEZONE` — timezone for active hours (default: Africa/Johannesburg)
@@ -36,9 +36,18 @@ DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage r
 - `OPENCLAW_GATEWAY_TOKEN` — Bearer token for auth
 - `WHATSAPP_RECIPIENTS` — comma-separated phone numbers or group JIDs
 
+## Deployment
+- **Production server**: 77.37.125.213 (Ubuntu 24.04, same host as OpenClaw gateway)
+- **Install path**: `/opt/ddbot` with Python venv at `/opt/ddbot/venv`
+- **Systemd service**: `ddbot.service` — runs via `xvfb-run` for headed Chrome support, enabled on boot, auto-restarts on failure
+- **Gateway**: `http://127.0.0.1:50548` (localhost since co-located with OpenClaw)
+- **Chrome**: Google Chrome stable installed system-wide; `curl_cffi` works directly on the server IP without needing Playwright fallback
+- **Management**: `systemctl {start|stop|restart|status} ddbot`, `journalctl -u ddbot -f`
+
 ## Current State
 - All core features implemented and tested (139 tests)
-- OpenClaw integration complete
-- Docker deployment ready (hardened with non-root user, healthcheck)
+- OpenClaw integration complete via `/tools/invoke` (direct message delivery, no LLM)
+- Deployed and running on production server as systemd service
 - Production hardened: safe config parsing, atomic history writes, poll loop crash protection
+- Monitoring MTN, polling every 30 min during 7:00-20:00 SAST, 15 min alert cooldown
 - No outstanding TODOs or known bugs
