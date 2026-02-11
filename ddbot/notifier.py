@@ -1,11 +1,13 @@
-"""WhatsApp notification sending via OpenClaw gateway."""
+"""Notification sending via WhatsApp (OpenClaw) and Telegram."""
 
 import logging
-from typing import List
+from typing import List, Optional
 
 import requests
 
 logger = logging.getLogger("ddbot.notifier")
+
+TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 
 
 def format_alert_message(
@@ -121,4 +123,75 @@ class WhatsAppNotifier:
         return self.send_message(
             phone,
             "\u2705 DDBot test message - WhatsApp integration is working!",
+        )
+
+
+class TelegramNotifier:
+    """Sends Telegram messages via the Telegram Bot API."""
+
+    def __init__(self, bot_token: str):
+        self._bot_token = bot_token
+        self._api_base = f"{TELEGRAM_API_BASE}{bot_token}"
+
+    def send_message(self, chat_id: str, message: str, parse_mode: Optional[str] = None) -> bool:
+        """Send a Telegram message to a chat. Returns True on success."""
+        endpoint = f"{self._api_base}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+
+        try:
+            resp = requests.post(endpoint, json=payload, timeout=30)
+            data = resp.json()
+            if resp.status_code == 200 and data.get("ok"):
+                logger.info("Telegram message sent to chat %s", chat_id)
+                return True
+            else:
+                logger.error(
+                    "Telegram API returned %d for chat %s: %s",
+                    resp.status_code,
+                    chat_id,
+                    data.get("description", resp.text[:200]),
+                )
+                return False
+        except Exception as exc:
+            logger.error("Failed to send Telegram message to %s: %s", chat_id, exc)
+            return False
+
+    def send_alert(
+        self,
+        chat_ids: List[str],
+        service: str,
+        report_count: int,
+        threshold: int,
+    ) -> List[str]:
+        """Send alert to all chat IDs. Returns list of successfully notified chats."""
+        message = format_alert_message(service, report_count, threshold)
+        logger.info(
+            "Sending Telegram alert for %s (%d reports) to %d chats",
+            service,
+            report_count,
+            len(chat_ids),
+        )
+
+        sent_to = []
+        for chat_id in chat_ids:
+            if self.send_message(chat_id, message):
+                sent_to.append(chat_id)
+
+        logger.info(
+            "Telegram alert delivered to %d/%d chats",
+            len(sent_to),
+            len(chat_ids),
+        )
+        return sent_to
+
+    def send_test_message(self, chat_id: str) -> bool:
+        """Send a test message to verify Telegram bot setup."""
+        return self.send_message(
+            chat_id,
+            "\u2705 DDBot test message - Telegram integration is working!",
         )

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from ddbot.config import Config, DATA_DIR, setup_logging
 from ddbot.history import AlertHistory
-from ddbot.notifier import WhatsAppNotifier
+from ddbot.notifier import WhatsAppNotifier, TelegramNotifier
 from ddbot.scraper import DownDetectorScraper
 
 HEARTBEAT_FILE = DATA_DIR / "heartbeat"
@@ -37,7 +37,8 @@ def is_within_active_hours(config: Config) -> bool:
 
 async def poll_once(
     scraper: DownDetectorScraper,
-    notifier: WhatsAppNotifier,
+    whatsapp_notifier: WhatsAppNotifier | None,
+    telegram_notifier: TelegramNotifier | None,
     history: AlertHistory,
     config: Config,
     services: list[str] | None = None,
@@ -72,17 +73,33 @@ async def poll_once(
                         config.threshold,
                     )
                 else:
-                    sent_to = notifier.send_alert(
-                        recipients=config.whatsapp_recipients,
-                        service=service,
-                        report_count=result.report_count,
-                        threshold=config.threshold,
-                    )
-                    if sent_to:
+                    all_sent_to = []
+
+                    # Send WhatsApp alerts
+                    if whatsapp_notifier and config.whatsapp_recipients:
+                        sent_to = whatsapp_notifier.send_alert(
+                            recipients=config.whatsapp_recipients,
+                            service=service,
+                            report_count=result.report_count,
+                            threshold=config.threshold,
+                        )
+                        all_sent_to.extend(sent_to)
+
+                    # Send Telegram alerts
+                    if telegram_notifier and config.telegram_chat_ids:
+                        sent_to = telegram_notifier.send_alert(
+                            chat_ids=config.telegram_chat_ids,
+                            service=service,
+                            report_count=result.report_count,
+                            threshold=config.threshold,
+                        )
+                        all_sent_to.extend([f"tg:{c}" for c in sent_to])
+
+                    if all_sent_to:
                         history.record_alert(
                             service=service,
                             report_count=result.report_count,
-                            recipients=sent_to,
+                            recipients=all_sent_to,
                         )
             else:
                 logger.debug(
@@ -101,10 +118,26 @@ async def poll_once(
     return any_success
 
 
+def create_notifiers(config: Config) -> tuple[WhatsAppNotifier | None, TelegramNotifier | None]:
+    """Create notifier instances based on config."""
+    whatsapp = None
+    telegram = None
+
+    if config.openclaw_gateway_token and config.whatsapp_recipients:
+        whatsapp = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
+        logger.info("WhatsApp notifier enabled (%d recipients)", len(config.whatsapp_recipients))
+
+    if config.telegram_bot_token and config.telegram_chat_ids:
+        telegram = TelegramNotifier(config.telegram_bot_token)
+        logger.info("Telegram notifier enabled (%d chats)", len(config.telegram_chat_ids))
+
+    return whatsapp, telegram
+
+
 async def run_loop(config: Config, debug_dump: bool = False) -> None:
     """Main polling loop."""
     scraper = DownDetectorScraper(debug_dump=debug_dump, chrome_path=config.chrome_path)
-    notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
+    whatsapp_notifier, telegram_notifier = create_notifiers(config)
     history = AlertHistory()
     consecutive_all_fail = 0
     max_backoff = 3600  # 1 hour cap
@@ -131,7 +164,7 @@ async def run_loop(config: Config, debug_dump: bool = False) -> None:
                 )
             else:
                 try:
-                    any_success = await poll_once(scraper, notifier, history, config)
+                    any_success = await poll_once(scraper, whatsapp_notifier, telegram_notifier, history, config)
                     if any_success:
                         if consecutive_all_fail > 0:
                             logger.info(
@@ -184,12 +217,12 @@ async def run_loop(config: Config, debug_dump: bool = False) -> None:
 async def run_once(config: Config, services: list[str] | None = None, debug_dump: bool = False) -> None:
     """Single check mode (--once)."""
     scraper = DownDetectorScraper(debug_dump=debug_dump, chrome_path=config.chrome_path)
-    notifier = WhatsAppNotifier(config.openclaw_gateway_url, config.openclaw_gateway_token)
+    whatsapp_notifier, telegram_notifier = create_notifiers(config)
     history = AlertHistory()
 
     await scraper.start()
     try:
-        await poll_once(scraper, notifier, history, config, services=services)
+        await poll_once(scraper, whatsapp_notifier, telegram_notifier, history, config, services=services)
     finally:
         await scraper.stop()
 

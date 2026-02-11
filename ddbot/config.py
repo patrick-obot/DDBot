@@ -35,6 +35,8 @@ class Config:
     openclaw_gateway_url: str = "http://127.0.0.1:18789"
     openclaw_gateway_token: str = ""
     whatsapp_recipients: List[str] = field(default_factory=list)
+    telegram_bot_token: str = ""
+    telegram_chat_ids: List[str] = field(default_factory=list)
     chrome_path: str = ""
     log_level: str = "INFO"
 
@@ -74,6 +76,9 @@ class Config:
         recipients_raw = os.getenv("WHATSAPP_RECIPIENTS", "")
         recipients = [r.strip() for r in recipients_raw.split(",") if r.strip()]
 
+        telegram_chat_ids_raw = os.getenv("TELEGRAM_CHAT_IDS", "")
+        telegram_chat_ids = [c.strip() for c in telegram_chat_ids_raw.split(",") if c.strip()]
+
         return cls(
             services=services,
             threshold=cls._safe_int("DD_THRESHOLD", 10),
@@ -89,6 +94,8 @@ class Config:
             ),
             openclaw_gateway_token=os.getenv("OPENCLAW_GATEWAY_TOKEN", ""),
             whatsapp_recipients=recipients,
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_ids=telegram_chat_ids,
             chrome_path=os.getenv("DD_CHROME_PATH", ""),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
@@ -114,10 +121,15 @@ class Config:
             errors.append("DD_SCRAPE_DELAY_MIN must be >= 0")
         if self.scrape_delay_max < self.scrape_delay_min:
             errors.append("DD_SCRAPE_DELAY_MAX must be >= DD_SCRAPE_DELAY_MIN")
-        if not self.openclaw_gateway_token:
-            errors.append("OPENCLAW_GATEWAY_TOKEN is required")
-        if not self.whatsapp_recipients:
-            errors.append("WHATSAPP_RECIPIENTS must contain at least one number")
+        # At least one notification method must be configured
+        has_whatsapp = self.openclaw_gateway_token and self.whatsapp_recipients
+        has_telegram = self.telegram_bot_token and self.telegram_chat_ids
+        if not has_whatsapp and not has_telegram:
+            errors.append(
+                "At least one notification method required: "
+                "WhatsApp (OPENCLAW_GATEWAY_TOKEN + WHATSAPP_RECIPIENTS) or "
+                "Telegram (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_IDS)"
+            )
         if self.log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
             errors.append(f"LOG_LEVEL '{self.log_level}' is not valid")
         return errors
