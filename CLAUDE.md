@@ -1,11 +1,11 @@
 # DDBot - Project Context
 
 ## Overview
-DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage reports and sends WhatsApp alerts via OpenClaw gateway when report counts exceed a threshold.
+DownDetector Alert Bot. Scrapes downdetector.co.za for service outage reports and sends alerts via WhatsApp (OpenClaw gateway) and/or Telegram when report counts exceed a threshold.
 
 ## Architecture
-- **ddbot/scraper.py** — Two-tier scraper: `curl_cffi` primary (browser TLS fingerprint impersonation via `impersonate="chrome"`) with lazy Playwright fallback. curl_cffi path uses regex HTML parsing → text-based fallback for data extraction. Detects Cloudflare challenges via markers ("just a moment", "verify you are human", "checking your browser", "cf-challenge") and falls back to Playwright automatically. Playwright fallback uses **connect-over-CDP**: launches a standalone Chrome subprocess with minimal flags (`--remote-debugging-port`, `--user-data-dir`), then connects Playwright via `connect_over_cdp()`. Minimal flags are critical — anti-detection flags like `--disable-blink-features=AutomationControlled` are themselves detected by Cloudflare. Chrome binary auto-detected or set via `DD_CHROME_PATH`. Persistent profile dir at `data/chrome_profile/` preserves `cf_clearance` cookies between runs (first run requires manual Turnstile solve in headed mode). Defaults to headed mode (`headless=False`) since headless Chrome has a different fingerprint that Cloudflare blocks. Playwright fallback adds JS object extraction (window.DD) as Strategy 1. Randomizes page wait times (2-5s). Cloudflare Turnstile checkbox click with up to 15s auto-resolve wait. Cookie consent popups auto-dismissed before data extraction. `ScrapeResult.source` field tracks which engine produced the result ("curl", "playwright", or "error")
-- **ddbot/notifier.py** — WhatsApp messaging via OpenClaw `/tools/invoke` endpoint using the `message` tool for direct delivery (no LLM processing). Supports phone numbers and group JIDs (`@g.us`)
+- **ddbot/scraper.py** — Two-tier scraper: `curl_cffi` primary (browser TLS fingerprint impersonation via `impersonate="chrome"`) with lazy Playwright fallback. Detects Cloudflare challenges and Next.js client-rendered pages (no `window.DD`), falling back to Playwright automatically. Playwright fallback uses **connect-over-CDP**: launches Chrome subprocess with minimal flags, connects via `connect_over_cdp()`. Persistent profile at `data/chrome_profile/` preserves `cf_clearance` cookies. Headed mode required (headless blocked by Cloudflare). Data extraction: legacy `window.DD` object → Recharts SVG parsing (`.recharts-area-curve` path coordinates) → text fallback. Clicks "skip" button to reveal chart data. Cookie consent auto-dismissed. `ScrapeResult.source` tracks engine used
+- **ddbot/notifier.py** — Multi-channel notifications: WhatsApp via OpenClaw `/tools/invoke` endpoint (supports phone numbers and group JIDs `@g.us`), Telegram via Bot API. Both channels can be enabled simultaneously; at least one required
 - **ddbot/history.py** — JSON-based alert history persistence with cooldown logic. Atomic file writes (temp + `os.replace`). Corrupt files backed up to `.bak`
 - **ddbot/config.py** — Environment variable config with validation, logging setup. Safe int parsing with fallback defaults. Service name validation (`^[a-z0-9-]+$`)
 - **ddbot/main.py** — Async polling loop with crash protection, exponential backoff on all-service-fail (doubles wait up to 1h cap), random inter-service delay, CLI interface (`--once`, `--service`, `--dry-run`, `--env`), heartbeat file for Docker HEALTHCHECK
@@ -33,8 +33,10 @@ DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage r
 - `DD_SCRAPE_DELAY_MAX` — maximum seconds between service scrapes (default: 15)
 - `DD_CHROME_PATH` — explicit path to Chrome/Chromium binary for Playwright CDP fallback (default: auto-detect)
 - `OPENCLAW_GATEWAY_URL` — OpenClaw endpoint (default: http://127.0.0.1:18789)
-- `OPENCLAW_GATEWAY_TOKEN` — Bearer token for auth
+- `OPENCLAW_GATEWAY_TOKEN` — Bearer token for WhatsApp auth
 - `WHATSAPP_RECIPIENTS` — comma-separated phone numbers or group JIDs
+- `TELEGRAM_BOT_TOKEN` — Telegram bot token (from @BotFather)
+- `TELEGRAM_CHAT_IDS` — comma-separated Telegram chat IDs to notify
 
 ## Deployment
 - **Production server**: 77.37.125.213 (Ubuntu 24.04, same host as OpenClaw gateway)
@@ -46,7 +48,8 @@ DownDetector WhatsApp Alert Bot. Scrapes downdetector.co.za for service outage r
 
 ## Current State
 - All core features implemented and tested (139 tests)
-- OpenClaw integration complete via `/tools/invoke` (direct message delivery, no LLM)
+- Dual notification channels: WhatsApp (OpenClaw) + Telegram (@DwnDetectorBot)
+- Scraper updated for DownDetector Next.js migration (Recharts SVG extraction)
 - Deployed and running on production server as systemd service
 - Production hardened: safe config parsing, atomic history writes, poll loop crash protection
 - Monitoring MTN, polling every 30 min during 7:00-20:00 SAST, 15 min alert cooldown
