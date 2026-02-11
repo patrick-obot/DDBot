@@ -189,6 +189,9 @@ class DownDetectorScraper:
             f"--remote-debugging-port={port}",
             f"--user-data-dir={self._profile_dir}",
         ]
+        # Chrome requires --no-sandbox when running as root on Linux
+        if os.geteuid() == 0 if hasattr(os, "geteuid") else False:
+            chrome_args.append("--no-sandbox")
         if self._headless:
             chrome_args.append("--headless=new")
 
