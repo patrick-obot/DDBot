@@ -379,6 +379,12 @@ class DownDetectorScraper:
                 source="curl",
             )
 
+        # Detect Next.js client-rendered page (no embedded data, needs JS execution)
+        if "_next/static" in html and "window.DD" not in html:
+            if self._debug_dump:
+                self._dump_html(service, html, suffix="_curl_nextjs")
+            raise CurlBlockedError(200, "Next.js client-rendered page, needs Playwright")
+
         # Strategy 3: Text-based fallback (strip HTML tags)
         body_text = re.sub(r"<[^>]+>", " ", html)
 
@@ -429,6 +435,19 @@ class DownDetectorScraper:
             except Exception:
                 continue
 
+    async def _click_skip_link(self) -> None:
+        """Click the 'skip' button to reveal chart data on DownDetector."""
+        try:
+            # The skip button appears as "Report a problem to see the chart, or skip"
+            skip_btn = self._page.locator('button:has-text("skip")').first
+            if await skip_btn.is_visible(timeout=3000):
+                await skip_btn.click()
+                logger.info("Clicked 'skip' button to reveal chart")
+                await self._page.wait_for_timeout(2000)  # Wait for chart to load
+        except Exception:
+            # Skip button may not be present if chart is already visible
+            pass
+
     async def _do_scrape_playwright(self, service: str, url: str) -> ScrapeResult:
         """Perform the actual page scrape using Playwright (fallback)."""
         if not self._page:
@@ -462,6 +481,9 @@ class DownDetectorScraper:
 
         # Dismiss cookie consent popups before data extraction
         await self._dismiss_consent_popup()
+
+        # Click "skip" link to reveal chart data (required on DownDetector)
+        await self._click_skip_link()
 
         if self._debug_dump:
             await self._dump_page(service)
@@ -595,7 +617,7 @@ class DownDetectorScraper:
 
         Returns (report_count, status_string_or_None).
         """
-        # Strategy 1: Extract from window.DD.currentServiceProperties JS object
+        # Strategy 1: Extract from window.DD.currentServiceProperties JS object (legacy)
         try:
             props = await page.evaluate(
                 "() => window.DD && window.DD.currentServiceProperties"
@@ -603,26 +625,90 @@ class DownDetectorScraper:
             if props:
                 return self._parse_service_properties(props)
         except Exception as exc:
-            logger.debug("JS evaluation failed: %s", exc)
+            logger.debug("window.DD extraction failed: %s", exc)
 
-        # Strategy 2: Parse the JS from page source as regex fallback
+        # Strategy 2: Parse the JS from page source as regex fallback (legacy)
         html = await page.content()
         result = self._parse_properties_from_html(html)
         if result is not None:
             return result
 
-        # Strategy 3: Text-based fallback
+        # Strategy 3: Extract from Recharts SVG (Next.js pages)
+        try:
+            recharts_result = await self._extract_from_recharts(page)
+            if recharts_result is not None:
+                return recharts_result
+        except Exception as exc:
+            logger.debug("Recharts extraction failed: %s", exc)
+
+        # Strategy 4: Text-based fallback (check for "no current problems" only)
         body_text = await page.inner_text("body")
 
         if "no current problems" in body_text.lower():
             return 0, "ok"
 
-        count = self._parse_report_text(body_text)
-        if count is not None:
-            return count, None
+        # Note: We don't use _parse_report_text here as it incorrectly matches
+        # Y-axis labels like "100" followed by "Report a problem" text.
 
         logger.warning("Could not extract report count, defaulting to 0")
         return 0, None
+
+    async def _extract_from_recharts(self, page) -> Optional[tuple[int, Optional[str]]]:
+        """Extract report count from Recharts SVG chart (Next.js pages).
+
+        Parses the SVG path coordinates to calculate the current report count.
+        Returns (report_count, status) or None if extraction fails.
+        """
+        js_code = """() => {
+            const wrapper = document.querySelector('.recharts-wrapper');
+            if (!wrapper) return null;
+
+            // Get Y-axis scale (max value)
+            const yTicks = wrapper.querySelectorAll('.recharts-yAxis .recharts-cartesian-axis-tick-value');
+            const yValues = Array.from(yTicks).map(t => parseFloat(t.textContent) || 0);
+            const yMax = Math.max(...yValues);
+            if (yMax <= 0) return null;
+
+            // Use .recharts-area-curve (actual data line) not .recharts-area-area (fill path)
+            // The fill path returns to baseline, giving incorrect Y values
+            const areaCurve = wrapper.querySelector('.recharts-area-curve');
+            const areaArea = wrapper.querySelector('.recharts-area-area');
+            const pathEl = areaCurve || areaArea;
+            if (!pathEl) return null;
+
+            const pathD = pathEl.getAttribute('d');
+            if (!pathD) return null;
+
+            // Parse Y coordinates from SVG path (format: M49,212L61.66,212...)
+            const yCoords = [];
+            const regex = /[ML]([\\d.]+),([\\d.]+)/g;
+            let match;
+            while ((match = regex.exec(pathD)) !== null) {
+                yCoords.push(parseFloat(match[2]));
+            }
+
+            if (!yCoords.length) return null;
+
+            // Baseline is the max Y coordinate (bottom of chart = 0 reports)
+            // SVG Y-axis is inverted: higher Y = lower value
+            const baseline = Math.max(...yCoords);
+            if (baseline <= 0) return null;
+
+            // Calculate report count for the last data point (most recent)
+            const lastY = yCoords[yCoords.length - 1];
+            const lastReports = Math.round(yMax * (baseline - lastY) / baseline);
+
+            return { reports: lastReports, yMax: yMax };
+        }"""
+
+        result = await page.evaluate(js_code)
+        if not result:
+            return None
+
+        report_count = result.get("reports", 0)
+        status = self._classify_status(report_count)
+        logger.debug("Recharts extraction: %d reports (yMax=%s)", report_count, result.get("yMax"))
+        return report_count, status
 
     @staticmethod
     def _parse_service_properties(props: dict) -> tuple[int, Optional[str]]:
