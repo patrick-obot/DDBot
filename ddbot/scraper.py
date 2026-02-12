@@ -494,6 +494,9 @@ class DownDetectorScraper:
         # Click "skip" link to reveal chart data (required on DownDetector)
         await self._click_skip_link()
 
+        # Wait for chart data to fully render before extraction
+        await self._page.wait_for_timeout(3000)
+
         if self._debug_dump:
             await self._dump_page(service)
 
