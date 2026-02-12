@@ -190,8 +190,9 @@ class DownDetectorScraper:
             f"--user-data-dir={self._profile_dir}",
             "--password-store=basic",  # Disable keyring prompt on Linux
         ]
-        # Chrome requires --no-sandbox when running as root on Linux
-        if os.geteuid() == 0 if hasattr(os, "geteuid") else False:
+        # Chrome sandbox often fails on Linux (especially Raspberry Pi) due to
+        # kernel namespace restrictions. Always disable on Linux for reliability.
+        if hasattr(os, "geteuid"):  # Linux/macOS
             chrome_args.append("--no-sandbox")
         if self._headless:
             chrome_args.append("--headless=new")
