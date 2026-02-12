@@ -188,6 +188,7 @@ class DownDetectorScraper:
             chrome_exe,
             f"--remote-debugging-port={port}",
             f"--user-data-dir={self._profile_dir}",
+            "--password-store=basic",  # Disable keyring prompt on Linux
         ]
         # Chrome requires --no-sandbox when running as root on Linux
         if os.geteuid() == 0 if hasattr(os, "geteuid") else False:
