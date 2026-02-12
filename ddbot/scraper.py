@@ -199,8 +199,7 @@ class DownDetectorScraper:
 
         self._chrome_process = subprocess.Popen(
             chrome_args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # Detach from parent's process group
         )
         logger.info(
             "Chrome subprocess launched (pid=%d, port=%d, headless=%s)",
