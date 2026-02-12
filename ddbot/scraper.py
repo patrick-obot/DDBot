@@ -150,7 +150,7 @@ class DownDetectorScraper:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
 
-    async def _wait_for_cdp_ready(self, port: int, timeout: float = 15) -> None:
+    async def _wait_for_cdp_ready(self, port: int, timeout: float = 30) -> None:
         """Poll Chrome's CDP /json/version endpoint until ready."""
         url = f"http://127.0.0.1:{port}/json/version"
         deadline = asyncio.get_event_loop().time() + timeout
