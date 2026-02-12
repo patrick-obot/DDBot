@@ -494,8 +494,15 @@ class DownDetectorScraper:
         # Click "skip" link to reveal chart data (required on DownDetector)
         await self._click_skip_link()
 
-        # Wait for chart data to fully render before extraction
-        await self._page.wait_for_timeout(3000)
+        # Force page to fully render by scrolling to chart and taking a screenshot
+        # This triggers lazy-loaded content and ensures chart is painted
+        try:
+            chart = self._page.locator('.recharts-wrapper').first
+            await chart.scroll_into_view_if_needed(timeout=5000)
+            await self._page.screenshot()  # Forces full render, result discarded
+        except Exception:
+            pass
+        await self._page.wait_for_timeout(2000)
 
         if self._debug_dump:
             await self._dump_page(service)
