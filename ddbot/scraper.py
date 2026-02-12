@@ -447,7 +447,12 @@ class DownDetectorScraper:
             if await skip_btn.is_visible(timeout=3000):
                 await skip_btn.click()
                 logger.info("Clicked 'skip' button to reveal chart")
-                await self._page.wait_for_timeout(2000)  # Wait for chart to load
+                # Wait for Recharts SVG to appear (up to 10s), then extra buffer for render
+                try:
+                    await self._page.wait_for_selector('.recharts-wrapper', timeout=10000)
+                except Exception:
+                    pass
+                await self._page.wait_for_timeout(2000)  # Extra buffer for chart animation
         except Exception:
             # Skip button may not be present if chart is already visible
             pass
