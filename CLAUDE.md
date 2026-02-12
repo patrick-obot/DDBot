@@ -46,6 +46,49 @@ DownDetector Alert Bot. Scrapes downdetector.co.za for service outage reports an
 - **Chrome**: Google Chrome stable installed system-wide; `curl_cffi` works directly on the server IP without needing Playwright fallback
 - **Management**: `systemctl {start|stop|restart|status} ddbot`, `journalctl -u ddbot -f`
 
+## Raspberry Pi Deployment (Residential IP Bypass)
+
+Cloudflare blocks datacenter IPs aggressively. A Raspberry Pi on a home network provides a residential IP that bypasses these blocks.
+
+### Quick Install
+```bash
+curl -sSL https://raw.githubusercontent.com/patrick-obot/DDBot/master/setup-pi.sh | sudo bash
+```
+
+### Post-Install Setup
+1. **Configure credentials**: `sudo nano /opt/ddbot/.env`
+2. **Set Chrome path**: `DD_CHROME_PATH=/usr/bin/chromium-browser`
+3. **Fix profile permissions**: `sudo chown -R $USER:$USER /opt/ddbot/data/`
+
+### First Run (Cloudflare Cookie)
+First run requires manually solving Cloudflare Turnstile via VNC:
+
+1. **Enable VNC**: `sudo raspi-config` → Interface Options → VNC → Enable
+2. **Connect via VNC** (RealVNC Viewer to `<pi-ip>:5900`)
+3. **Run DDBot**: `cd /opt/ddbot && source venv/bin/activate && python -m ddbot.main --once --service mtn`
+4. **Solve Turnstile** checkbox when prompted — cookie saves to `data/chrome_profile/`
+5. **Start service**: `sudo systemctl enable ddbot && sudo systemctl start ddbot`
+
+### Pi-Specific Chrome Flags
+The scraper uses these flags for Raspberry Pi compatibility:
+- `--no-sandbox` — Chrome sandbox fails on Pi due to kernel namespace restrictions
+- `--password-store=basic` — Disables GNOME keyring prompt that blocks Chrome startup
+- `start_new_session=True` — Detaches Chrome from Python's process group
+
+### Troubleshooting
+- **Zombie Chrome processes**: `sudo pkill -9 -f chromium` then `rm -f /opt/ddbot/data/chrome_profile/Singleton*`
+- **Profile permission errors**: `sudo chown -R $USER:$USER /opt/ddbot/data/`
+- **CDP timeout**: Reboot Pi to clear stale processes
+- **0 reports extracted**: The scraper forces a screenshot to trigger chart rendering; if still failing, run with `--debug-dump` to inspect
+
+### Management
+```bash
+sudo systemctl status ddbot      # Check status
+sudo systemctl restart ddbot     # Restart
+sudo journalctl -u ddbot -f      # Live logs
+sudo journalctl -u ddbot -n 50   # Last 50 lines
+```
+
 ## Current State
 - All core features implemented and tested (139 tests)
 - Dual notification channels: WhatsApp (OpenClaw) + Telegram (@DwnDetectorBot)
