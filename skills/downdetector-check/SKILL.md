@@ -47,12 +47,19 @@ Check https://downdetector.co.za/status/mtn/"
 Replace service name and URL with the actual service being checked.
 Also send to +27786385989 if the check was triggered manually (not by DDBot).
 
-### Step 4: Close the browser
-After extracting the report count and screenshot, close the browser tab that was opened:
-```
-browser: close → targetId from the navigate step
-```
-If multiple tabs were opened during the check, close all of them.
+### Step 4: Close all browser instances
+After extracting the report count and screenshot, clean up all browser state so no windows are left open:
+
+1. Close the specific tab:
+   ```
+   browser: close → targetId from the navigate step
+   ```
+2. Then stop the browser session entirely to free resources:
+   ```
+   browser: stop → profile="openclaw"
+   ```
+
+This is critical — the skill runs on a cron every 30 min and leaving sessions open will accumulate hundreds of windows over time.
 
 ### Step 5: Report findings
 Always include:
