@@ -48,18 +48,22 @@ Replace service name and URL with the actual service being checked.
 Also send to +27786385989 if the check was triggered manually (not by DDBot).
 
 ### Step 4: Close all browser instances
-After extracting the report count and screenshot, clean up all browser state so no windows are left open:
+After extracting the report count and screenshot, fully clean up — stopping the browser alone is not enough, the process must be killed:
 
 1. Close the specific tab:
    ```
    browser: close → targetId from the navigate step
    ```
-2. Then stop the browser session entirely to free resources:
+2. Stop the OpenClaw browser session:
    ```
    browser: stop → profile="openclaw"
    ```
+3. **Kill any remaining Chromium processes** to prevent accumulation:
+   ```
+   exec: kill $(pgrep -f "openclaw/browser/openclaw") 2>/dev/null; true
+   ```
 
-This is critical — the skill runs on a cron every 30 min and leaving sessions open will accumulate hundreds of windows over time.
+This is critical — the skill runs on a cron every 30 min. Without step 3, renderer processes accumulate (one per run) and will exhaust memory.
 
 ### Step 5: Report findings
 Always include:
