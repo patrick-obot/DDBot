@@ -47,7 +47,14 @@ Check https://downdetector.co.za/status/mtn/"
 Replace service name and URL with the actual service being checked.
 Also send to +27786385989 if the check was triggered manually (not by DDBot).
 
-### Step 4: Report findings
+### Step 4: Close the browser
+After extracting the report count and screenshot, close the browser tab that was opened:
+```
+browser: close → targetId from the navigate step
+```
+If multiple tabs were opened during the check, close all of them.
+
+### Step 5: Report findings
 Always include:
 - ✅ / ⚠️ / 🔴 Overall status
 - Report count (if visible)
