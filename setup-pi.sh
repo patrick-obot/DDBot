@@ -15,7 +15,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-INSTALL_DIR="/opt/ddbot"
+INSTALL_DIR="/root/Projects/ddbot"
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -133,10 +133,10 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/ddbot
+WorkingDirectory=/root/Projects/ddbot
 Environment=DISPLAY=:99
 ExecStartPre=/usr/bin/Xvfb :99 -screen 0 1280x720x24 &
-ExecStart=/opt/ddbot/venv/bin/python -m ddbot.main
+ExecStart=/root/Projects/ddbot/venv/bin/python -m ddbot.main
 Restart=on-failure
 RestartSec=30
 StandardOutput=journal
@@ -155,8 +155,8 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/ddbot
-ExecStart=/usr/bin/xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" /opt/ddbot/venv/bin/python -m ddbot.main
+WorkingDirectory=/root/Projects/ddbot
+ExecStart=/usr/bin/xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" /root/Projects/ddbot/venv/bin/python -m ddbot.main
 Restart=on-failure
 RestartSec=30
 StandardOutput=journal
