@@ -4,7 +4,7 @@
 DownDetector Alert Bot. Scrapes downdetector.co.za for service outage reports and sends alerts via WhatsApp (OpenClaw gateway) and/or Telegram when report counts exceed a threshold.
 
 ## Architecture
-- **ddbot/scraper.py** — Two-tier scraper: `curl_cffi` primary (browser TLS fingerprint impersonation via `impersonate="chrome"`) with lazy Playwright fallback. Detects Cloudflare challenges and Next.js client-rendered pages (no `window.DD`), falling back to Playwright automatically. Playwright fallback uses **connect-over-CDP**: launches Chrome subprocess with minimal flags, connects via `connect_over_cdp()`. Persistent profile at `data/chrome_profile/` preserves `cf_clearance` cookies. Headed mode required (headless blocked by Cloudflare). Data extraction: legacy `window.DD` object → Recharts SVG parsing (`.recharts-area-curve` path coordinates) → text fallback. Clicks "skip" button to reveal chart data. Cookie consent auto-dismissed. `ScrapeResult.source` tracks engine used
+- **ddbot/scraper.py** — Two-tier scraper: `curl_cffi` primary (browser TLS fingerprint impersonation via `impersonate="chrome"`) with lazy Playwright fallback. Detects Cloudflare challenges and Next.js client-rendered pages (no `window.DD`), falling back to Playwright automatically. Playwright fallback uses **connect-over-CDP**: launches Chrome subprocess with minimal flags, connects via `connect_over_cdp()`. Persistent profile at `data/chrome_profile/` preserves `cf_clearance` cookies. Headed mode required (headless blocked by Cloudflare). Data extraction: legacy `window.DD` object → Recharts SVG parsing (`.recharts-area-curve` path coordinates) → text fallback. Clicks "skip" button to reveal chart data. Cookie consent auto-dismissed. `ScrapeResult.source` tracks engine used. **Chrome cleanup**: `stop()` uses `os.killpg()` to kill the entire Chrome process group (parent + child renderers, zygotes, crash handlers) since Chrome is launched with `start_new_session=True`; prevents zombie process accumulation
 - **ddbot/notifier.py** — Multi-channel notifications: WhatsApp via OpenClaw `/tools/invoke` endpoint (supports phone numbers and group JIDs `@g.us`), Telegram via Bot API. Both channels can be enabled simultaneously; at least one required
 - **ddbot/history.py** — JSON-based alert history persistence with cooldown logic. Atomic file writes (temp + `os.replace`). Corrupt files backed up to `.bak`
 - **ddbot/config.py** — Environment variable config with validation, logging setup. Safe int parsing with fallback defaults. Service name validation (`^[a-z0-9-]+$`)
@@ -50,22 +50,22 @@ DownDetector Alert Bot. Scrapes downdetector.co.za for service outage reports an
 
 Cloudflare blocks datacenter IPs aggressively. A Raspberry Pi on a home network provides a residential IP that bypasses these blocks.
 
-### Quick Install
-```bash
-curl -sSL https://raw.githubusercontent.com/patrick-obot/DDBot/master/setup-pi.sh | sudo bash
-```
+### Install Path
+- **Project**: `/home/mypi/Projects/ddbot` with Python venv at `/home/mypi/Projects/ddbot/venv`
+- **Systemd service**: `/etc/systemd/system/ddbot.service` — runs as `mypi` user, auto-restarts on failure
+- **Logs**: `/home/mypi/Projects/ddbot/logs/ddbot.log`
 
 ### Post-Install Setup
-1. **Configure credentials**: `sudo nano /opt/ddbot/.env`
+1. **Configure credentials**: `nano /home/mypi/Projects/ddbot/.env`
 2. **Set Chrome path**: `DD_CHROME_PATH=/usr/bin/chromium-browser`
-3. **Fix profile permissions**: `sudo chown -R $USER:$USER /opt/ddbot/data/`
+3. **Fix profile permissions**: `sudo chown -R mypi:mypi /home/mypi/Projects/ddbot/data/`
 
 ### First Run (Cloudflare Cookie)
 First run requires manually solving Cloudflare Turnstile via VNC:
 
 1. **Enable VNC**: `sudo raspi-config` → Interface Options → VNC → Enable
 2. **Connect via VNC** (RealVNC Viewer to `<pi-ip>:5900`)
-3. **Run DDBot**: `cd /opt/ddbot && source venv/bin/activate && python -m ddbot.main --once --service mtn`
+3. **Run DDBot**: `cd /home/mypi/Projects/ddbot && source venv/bin/activate && python -m ddbot.main --once --service mtn`
 4. **Solve Turnstile** checkbox when prompted — cookie saves to `data/chrome_profile/`
 5. **Start service**: `sudo systemctl enable ddbot && sudo systemctl start ddbot`
 
@@ -76,8 +76,8 @@ The scraper uses these flags for Raspberry Pi compatibility:
 - `start_new_session=True` — Detaches Chrome from Python's process group
 
 ### Troubleshooting
-- **Zombie Chrome processes**: `sudo pkill -9 -f chromium` then `rm -f /opt/ddbot/data/chrome_profile/Singleton*`
-- **Profile permission errors**: `sudo chown -R $USER:$USER /opt/ddbot/data/`
+- **Zombie Chrome processes**: `sudo pkill -9 -f chromium` then `rm -f /home/mypi/Projects/ddbot/data/chrome_profile/Singleton*`
+- **Profile permission errors**: `sudo chown -R mypi:mypi /home/mypi/Projects/ddbot/data/`
 - **CDP timeout**: Reboot Pi to clear stale processes
 - **0 reports extracted**: The scraper forces a screenshot to trigger chart rendering; if still failing, run with `--debug-dump` to inspect
 

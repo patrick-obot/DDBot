@@ -261,17 +261,36 @@ class DownDetectorScraper:
             self._playwright_started = False
             logger.info("Playwright browser closed")
 
-        # Terminate Chrome subprocess
+        # Terminate Chrome subprocess and all its children (renderers, zygotes, etc.)
+        # Chrome is launched with start_new_session=True so it has its own process group.
         if self._chrome_process is not None:
+            pgid = None
             try:
-                self._chrome_process.terminate()
-                self._chrome_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._chrome_process.kill()
-                self._chrome_process.wait(timeout=5)
+                pgid = os.getpgid(self._chrome_process.pid)
             except OSError:
                 pass
-            logger.info("Chrome subprocess terminated (pid=%d)", self._chrome_process.pid)
+
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, 15)  # SIGTERM the whole group
+                    self._chrome_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(pgid, 9)  # SIGKILL the whole group
+                        self._chrome_process.wait(timeout=5)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                except OSError:
+                    pass
+            else:
+                # Fallback: kill just the main process
+                try:
+                    self._chrome_process.kill()
+                    self._chrome_process.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+
+            logger.info("Chrome process group terminated (pid=%d)", self._chrome_process.pid)
             self._chrome_process = None
 
         self._profile_dir = None
